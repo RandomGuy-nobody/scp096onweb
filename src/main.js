@@ -7,72 +7,74 @@ import { OutputPass }      from 'three/addons/postprocessing/OutputPass.js';
 import { GLTFLoader }      from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 
-import { loadSCP096 }    from './scp096.js';
-import { SCP096AI }      from './scp096ai.js';
-import { SoundManager }  from './sounds.js';
-import { Bazooka }       from './bazooka.js';
+import { loadSCP096 }       from './scp096.js';
+import { SCP096Renderer }   from './scp096render.js';
+import { SoundManager }     from './sounds.js';
+import { Bazooka }          from './bazooka.js';
 import { PlayerModel, makePreviewScene, framePreview } from './playermodel.js';
+import { NetworkClient }    from './network.js';
 
 /* ================================================================== *
  *  CONFIG
  * ================================================================== */
-const COLS = 16, ROWS = 16, CELL = 4, WALL_H = 4, SPAWN_CHAMBER = 7;
-
+const CELL = 4, WALL_H = 4;
 const PLAYER_RADIUS = 1.0;
-const EYE_HEIGHT    = 2.4;
-const WALK_SPEED    = 9;
-const RUN_SPEED     = 20;
-const DAMPING       = 14;
-const LOOK_SENS     = 0.0022;
-
+const EYE_HEIGHT = 2.4;
+const WALK_SPEED = 9, RUN_SPEED = 20;
+const DAMPING = 14, LOOK_SENS = 0.0022;
 const SHADOW_LEVELS = [4096, 2048, 1024, 512];
-const FPS_TARGET     = 50;
-const FPS_BAD_SAMPLES = 2;
-
-const FP_THRESHOLD = 0.12;
-const TP_MIN = 2.5, TP_MAX = 30;
-
-const SCP_CLEARANCE_RADIUS = 1;
+const FPS_TARGET = 50, FPS_BAD_SAMPLES = 2;
+const FP_THRESHOLD = 0.12, TP_MIN = 2.5, TP_MAX = 30;
 
 /* ================================================================== *
  *  i18n
  * ================================================================== */
 const STRINGS = {
   en: {
-    title:        'Maze',
-    subtitle:     'Select your survivor',
-    card1Title:   'Teletubby',
-    card1Sub:     'Suspiciously white',
-    card2Title:   'Roblox Noob',
-    card2Sub:     'Blocky & proud',
-    play:         'PLAY',
-    loading:      'Loading…',
-    noModels:     'No models',
-    dragRotate:   n => `Survivor ${n} — drag to rotate`,
-    notLoaded:    n => `Model ${n} not loaded`,
-    controls:     'WASD — move · Shift — run · Click — fire · Q — highlight · E — path · Ctrl — lock · P — post-fx · L — language',
-    achUnlocked:  'Achievement unlocked',
-    achName:      'Survivor',
-    achDesc:      'Survived an active chase for 30 seconds',
-    langLabel:    'PT',
+    title: 'Maze',
+    subtitle: 'Select your survivor',
+    card1Title: 'Teletubby',
+    card1Sub: 'Suspiciously white',
+    card2Title: 'Roblox Noob',
+    card2Sub: 'Stupid',
+    play: 'PLAY',
+    loading: 'Loading…',
+    connecting: 'Connecting…',
+    noModels: 'No models',
+    usernamePlaceholder: 'Enter username',
+    errUsername: 'Pick a username',
+    errTaken: 'That username is taken',
+    errConn: 'Connection failed',
+    dragRotate: n => `Survivor ${n} — drag to rotate`,
+    notLoaded: n => `Model ${n} not loaded`,
+    controls: 'WASD — move · Shift — run · Click — fire · Q — highlight · E — path · Ctrl — lock · P — post-fx · L — language',
+    achUnlocked: 'Achievement unlocked',
+    achName: 'Survivor',
+    achDesc: 'Survived an active chase for 30 seconds',
+    langLabel: 'PT',
   },
   pt: {
-    title:        'Labirinto',
-    subtitle:     'Escolha seu sobrevivente',
-    card1Title:   'Teletubby',
-    card1Sub:     'Suspeitamente branco',
-    card2Title:   'Noob do Roblox',
-    card2Sub:     'Noob',
-    play:         'JOGAR',
-    loading:      'Carregando…',
-    noModels:     'Sem modelos',
-    dragRotate:   n => `Sobrevivente ${n} — arraste para girar`,
-    notLoaded:    n => `Modelo ${n} não carregado`,
-    controls:     'WASD — mover · Shift — correr · Clique — atirar · Q — destacar · E — caminho · Ctrl — travar · P — pós-fx · L — idioma',
-    achUnlocked:  'Conquista desbloqueada',
-    achName:      'Sobrevivente',
-    achDesc:      'Sobreviveu a uma perseguição ativa por 30 segundos',
-    langLabel:    'EN',
+    title: 'Labirinto',
+    subtitle: 'Escolha seu sobrevivente',
+    card1Title: 'Teletubby',
+    card1Sub: 'Suspeitamente branco',
+    card2Title: 'Noob do Roblox',
+    card2Sub: 'Noob',
+    play: 'JOGAR',
+    loading: 'Carregando…',
+    connecting: 'Conectando…',
+    noModels: 'Sem modelos',
+    usernamePlaceholder: 'Digite seu nome',
+    errUsername: 'Escolha um nome',
+    errTaken: 'Esse nome já está em uso',
+    errConn: 'Falha na conexão',
+    dragRotate: n => `Sobrevivente ${n} — arraste para girar`,
+    notLoaded: n => `Modelo ${n} não carregado`,
+    controls: 'WASD — mover · Shift — correr · Clique — atirar · Q — destacar · E — caminho · Ctrl — travar · P — pós-fx · L — idioma',
+    achUnlocked: 'Conquista desbloqueada',
+    achName: 'Sobrevivente',
+    achDesc: 'Sobreviveu a uma perseguição ativa por 30 segundos',
+    langLabel: 'EN',
   },
 };
 
@@ -80,8 +82,7 @@ let lang = 'en';
 try {
   const browser = (navigator.language || 'en').toLowerCase();
   if (browser.startsWith('pt')) lang = 'pt';
-} catch (_) { /* keep default */ }
-console.log(`[i18n] detected language: ${lang}`);
+} catch (_) {}
 
 function t(key, ...args) {
   const entry = STRINGS[lang]?.[key];
@@ -90,78 +91,120 @@ function t(key, ...args) {
 }
 
 /* ================================================================== *
- *  MAZE
+ *  NETWORK
  * ================================================================== */
-function generateMaze(cols, rows) {
-  const W = cols * 2 + 1, H = rows * 2 + 1;
-  const grid = new Uint8Array(W * H).fill(1);
-  const idx = (x, y) => y * W + x;
-  const stack = [[1, 1]];
-  grid[idx(1, 1)] = 0;
-  const dirs = [[0,-2],[0,2],[-2,0],[2,0]];
-  while (stack.length) {
-    const [cx, cy] = stack[stack.length - 1];
-    const options = [];
-    for (const [dx, dy] of dirs) {
-      const nx = cx + dx, ny = cy + dy;
-      if (nx > 0 && nx < W - 1 && ny > 0 && ny < H - 1 && grid[idx(nx, ny)] === 1)
-        options.push([nx, ny, dx, dy]);
-    }
-    if (!options.length) { stack.pop(); continue; }
-    const [nx, ny, dx, dy] = options[(Math.random() * options.length) | 0];
-    grid[idx(cx + dx / 2, cy + dy / 2)] = 0;
-    grid[idx(nx, ny)] = 0;
-    stack.push([nx, ny]);
-  }
-  const extras = Math.floor(cols * rows * 0.10);
-  for (let i = 0; i < extras; i++) {
-    const x = 1 + ((Math.random() * (W - 2)) | 0);
-    const y = 1 + ((Math.random() * (H - 2)) | 0);
-    if (grid[idx(x, y)] !== 1) continue;
-    const openH = grid[idx(x - 1, y)] === 0 && grid[idx(x + 1, y)] === 0;
-    const openV = grid[idx(x, y - 1)] === 0 && grid[idx(x, y + 1)] === 0;
-    if (openH !== openV) grid[idx(x, y)] = 0;
-  }
-  return { grid, W, H };
-}
+const net = new NetworkClient();
 
-function pickFarSpawnCell(grid, W, H, ax, ay, minDist) {
-  const c = [];
-  for (let gy = 1; gy < H - 1; gy++)
-    for (let gx = 1; gx < W - 1; gx++) {
-      if (grid[gy * W + gx] !== 0) continue;
-      if (Math.hypot(gx - ax, gy - ay) < minDist) continue;
-      c.push([gx, gy]);
-    }
-  if (!c.length) return { gx: W - 2, gy: H - 2 };
-  const [gx, gy] = c[(Math.random() * c.length) | 0];
-  return { gx, gy };
-}
+/* placeholder until server sends maze */
+let maze = null;
+let grid = null, W = 0, H = 0;
+let originX = 0, originZ = 0;
+let cellToWorldX = () => 0, cellToWorldZ = () => 0;
+let SPAWN_GX = 0, SPAWN_GY = 0;
+let spawnWorld = { x: 0, z: 0 };
 
 /* ================================================================== *
- *  BUILD MAZE
+ *  RENDERER / SCENE / CAMERA
  * ================================================================== */
-const { grid, W, H } = generateMaze(COLS, ROWS);
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+document.getElementById('app').appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x9fb8d4, 0.011);
+
+const camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerHeight, 0.1, 800);
+camera.rotation.order = 'YXZ';
+scene.add(camera);
+
+/* ================================================================== *
+ *  SKY / LIGHTS (same as before)
+ * ================================================================== */
+const sunDir = new THREE.Vector3(0.55, 0.85, 0.35).normalize();
 
 {
-  const x0 = 1, y0 = 1, x1 = x0 + SPAWN_CHAMBER - 1, y1 = y0 + SPAWN_CHAMBER - 1;
-  for (let gy = y0; gy <= y1; gy++)
-    for (let gx = x0; gx <= x1; gx++) grid[gy * W + gx] = 0;
+  const skyMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    uniforms: {
+      topColor:     { value: new THREE.Color(0x2456b8) },
+      horizonColor: { value: new THREE.Color(0xcfe1f5) },
+      bottomColor:  { value: new THREE.Color(0x6d7d8f) },
+      sunDir:       { value: sunDir.clone() },
+      sunColor:     { value: new THREE.Color(0xfff2c0) },
+    },
+    vertexShader: `
+      varying vec3 vWorldPos;
+      void main() {
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorldPos = wp.xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: `
+      uniform vec3 topColor;
+      uniform vec3 horizonColor;
+      uniform vec3 bottomColor;
+      uniform vec3 sunDir;
+      uniform vec3 sunColor;
+      varying vec3 vWorldPos;
+      void main() {
+        vec3 dir = normalize(vWorldPos);
+        float h = dir.y;
+        vec3 col = (h > 0.0)
+          ? mix(horizonColor, topColor, pow(h, 0.55))
+          : mix(horizonColor, bottomColor, pow(-h, 0.5));
+        float sd = max(0.0, dot(dir, sunDir));
+        float disc = pow(sd, 1400.0) * 6.0;
+        float glow = pow(sd, 14.0) * 0.55;
+        col += sunColor * (disc + glow);
+        gl_FragColor = vec4(col, 1.0);
+      }`,
+  });
+  scene.add(new THREE.Mesh(new THREE.SphereGeometry(600, 48, 28), skyMat));
 }
-const SPAWN_GX = 1 + (SPAWN_CHAMBER - 1) / 2;
-const SPAWN_GY = 1 + (SPAWN_CHAMBER - 1) / 2;
 
-const scpSpawnCell = pickFarSpawnCell(grid, W, H, SPAWN_GX, SPAWN_GY, 12);
-for (let dy = -SCP_CLEARANCE_RADIUS; dy <= SCP_CLEARANCE_RADIUS; dy++)
-  for (let dx = -SCP_CLEARANCE_RADIUS; dx <= SCP_CLEARANCE_RADIUS; dx++) {
-    const gx = scpSpawnCell.gx + dx, gy = scpSpawnCell.gy + dy;
-    if (gx > 0 && gx < W - 1 && gy > 0 && gy < H - 1) grid[gy * W + gx] = 0;
-  }
+scene.add(new THREE.HemisphereLight(0xc8d8ff, 0x50493c, 0.85));
 
-const originX = -(W * CELL) / 2;
-const originZ = -(H * CELL) / 2;
-const cellToWorldX = gx => originX + gx * CELL + CELL / 2;
-const cellToWorldZ = gy => originZ + gy * CELL + CELL / 2;
+const sun = new THREE.DirectionalLight(0xffeed0, 3.0);
+sun.castShadow = true;
+sun.shadow.camera.near = 1;
+sun.shadow.camera.far = 700;
+sun.shadow.bias = -0.0005;
+sun.shadow.normalBias = 0.03;
+sun.shadow.radius = 3.5;
+sun.position.copy(sunDir).multiplyScalar(120);
+sun.target.position.set(0, 0, 0);
+scene.add(sun, sun.target);
+
+const fill = new THREE.DirectionalLight(0xffd8a0, 0.35);
+fill.position.copy(sunDir).multiplyScalar(-1);
+scene.add(fill);
+
+/* ================================================================== *
+ *  SHADOW CONTROL
+ * ================================================================== */
+let shadowLevel = 0, manualShadow = false;
+const shadowResEl = document.getElementById('shadowRes');
+
+function applyShadowResolution(size) {
+  sun.shadow.mapSize.set(size, size);
+  if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
+  if (shadowResEl) shadowResEl.textContent = `${size}²`;
+}
+applyShadowResolution(SHADOW_LEVELS[0]);
+
+function stepShadow(dir) {
+  const next = Math.max(0, Math.min(SHADOW_LEVELS.length - 1, shadowLevel + dir));
+  if (next === shadowLevel) return;
+  shadowLevel = next;
+  manualShadow = true;
+  applyShadowResolution(SHADOW_LEVELS[shadowLevel]);
+}
 
 /* ================================================================== *
  *  PROCEDURAL TEXTURES
@@ -219,125 +262,36 @@ function makeWallBumpTexture(size = 256) {
 }
 
 /* ================================================================== *
- *  RENDERER
+ *  WORLD BUILD (after welcome)
  * ================================================================== */
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.15;
-document.getElementById('app').appendChild(renderer.domElement);
+let worldBuilt = false;
 
-/* ================================================================== *
- *  SCENE / CAMERA
- * ================================================================== */
-const scene = new THREE.Scene();
-scene.fog = new THREE.FogExp2(0x9fb8d4, 0.011);
+function buildWorld() {
+  if (worldBuilt) return;
+  worldBuilt = true;
 
-const camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerHeight, 0.1, 800);
-camera.rotation.order = 'YXZ';
-scene.add(camera);
+  W = maze.W; H = maze.H;
+  grid = new Uint8Array(maze.grid);
+  SPAWN_GX = maze.SPAWN_GX;
+  SPAWN_GY = maze.SPAWN_GY;
 
-/* ================================================================== *
- *  SKY
- * ================================================================== */
-const sunDir = new THREE.Vector3(0.55, 0.85, 0.35).normalize();
+  originX = -(W * CELL) / 2;
+  originZ = -(H * CELL) / 2;
+  cellToWorldX = gx => originX + gx * CELL + CELL / 2;
+  cellToWorldZ = gy => originZ + gy * CELL + CELL / 2;
+  spawnWorld = { x: cellToWorldX(SPAWN_GX), z: cellToWorldZ(SPAWN_GY) };
 
-{
-  const skyMat = new THREE.ShaderMaterial({
-    side: THREE.BackSide,
-    depthWrite: false,
-    uniforms: {
-      topColor:     { value: new THREE.Color(0x2456b8) },
-      horizonColor: { value: new THREE.Color(0xcfe1f5) },
-      bottomColor:  { value: new THREE.Color(0x6d7d8f) },
-      sunDir:       { value: sunDir.clone() },
-      sunColor:     { value: new THREE.Color(0xfff2c0) },
-    },
-    vertexShader: /* glsl */`
-      varying vec3 vWorldPos;
-      void main() {
-        vec4 wp = modelMatrix * vec4(position, 1.0);
-        vWorldPos = wp.xyz;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }`,
-    fragmentShader: /* glsl */`
-      uniform vec3 topColor;
-      uniform vec3 horizonColor;
-      uniform vec3 bottomColor;
-      uniform vec3 sunDir;
-      uniform vec3 sunColor;
-      varying vec3 vWorldPos;
-      void main() {
-        vec3 dir = normalize(vWorldPos);
-        float h = dir.y;
-        vec3 col = (h > 0.0)
-          ? mix(horizonColor, topColor, pow(h, 0.55))
-          : mix(horizonColor, bottomColor, pow(-h, 0.5));
-        float sd = max(0.0, dot(dir, sunDir));
-        float disc = pow(sd, 1400.0) * 6.0;
-        float glow = pow(sd, 14.0) * 0.55;
-        col += sunColor * (disc + glow);
-        gl_FragColor = vec4(col, 1.0);
-      }`,
-  });
-  scene.add(new THREE.Mesh(new THREE.SphereGeometry(600, 48, 28), skyMat));
-}
+  /* shadows scale */
+  const mazeExtent = Math.max(W, H) * CELL;
+  const shadowExtent = mazeExtent * 0.62;
+  sun.shadow.camera.left   = -shadowExtent;
+  sun.shadow.camera.right  =  shadowExtent;
+  sun.shadow.camera.top    =  shadowExtent;
+  sun.shadow.camera.bottom = -shadowExtent;
+  sun.shadow.camera.updateProjectionMatrix();
+  sun.position.copy(sunDir).multiplyScalar(shadowExtent * 2.4);
 
-/* ================================================================== *
- *  LIGHTS
- * ================================================================== */
-scene.add(new THREE.HemisphereLight(0xc8d8ff, 0x50493c, 0.85));
-
-const sun = new THREE.DirectionalLight(0xffeed0, 3.0);
-sun.castShadow = true;
-
-const mazeExtent   = Math.max(W, H) * CELL;
-const shadowExtent = mazeExtent * 0.62;
-sun.shadow.camera.left   = -shadowExtent;
-sun.shadow.camera.right  =  shadowExtent;
-sun.shadow.camera.top    =  shadowExtent;
-sun.shadow.camera.bottom = -shadowExtent;
-sun.shadow.camera.near   = 1;
-sun.shadow.camera.far    = 700;
-sun.shadow.bias          = -0.0005;
-sun.shadow.normalBias    = 0.03;
-sun.shadow.radius        = 3.5;
-sun.position.copy(sunDir).multiplyScalar(shadowExtent * 2.4);
-sun.target.position.set(0, 0, 0);
-scene.add(sun, sun.target);
-
-const fill = new THREE.DirectionalLight(0xffd8a0, 0.35);
-fill.position.copy(sunDir).multiplyScalar(-1);
-scene.add(fill);
-
-/* ================================================================== *
- *  ADAPTIVE SHADOWS
- * ================================================================== */
-let shadowLevel = 0, manualShadow = false;
-const shadowResEl = document.getElementById('shadowRes');
-
-function applyShadowResolution(size) {
-  sun.shadow.mapSize.set(size, size);
-  if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
-  if (shadowResEl) shadowResEl.textContent = `${size}²`;
-}
-applyShadowResolution(SHADOW_LEVELS[0]);
-
-function stepShadow(dir) {
-  const next = Math.max(0, Math.min(SHADOW_LEVELS.length - 1, shadowLevel + dir));
-  if (next === shadowLevel) return;
-  shadowLevel = next;
-  manualShadow = true;
-  applyShadowResolution(SHADOW_LEVELS[shadowLevel]);
-}
-
-/* ================================================================== *
- *  WALLS
- * ================================================================== */
-{
+  /* walls */
   const wallCells = [];
   for (let gy = 0; gy < H; gy++)
     for (let gx = 0; gx < W; gx++)
@@ -345,17 +299,14 @@ function stepShadow(dir) {
 
   const bump = makeWallBumpTexture(256);
   bump.repeat.set(3, 3);
-
   const wallGeo = new THREE.BoxGeometry(CELL, WALL_H, CELL);
   const wallMat = new THREE.MeshStandardMaterial({
     color: 0xd6cfbf, roughness: 0.94, metalness: 0.02,
     bumpMap: bump, bumpScale: 0.06,
   });
-
   const walls = new THREE.InstancedMesh(wallGeo, wallMat, wallCells.length);
   const m = new THREE.Matrix4();
   const col = new THREE.Color();
-
   wallCells.forEach(([gx, gy], i) => {
     m.makeTranslation(cellToWorldX(gx), WALL_H / 2, cellToWorldZ(gy));
     walls.setMatrixAt(i, m);
@@ -368,15 +319,10 @@ function stepShadow(dir) {
   walls.castShadow = true;
   walls.receiveShadow = true;
   scene.add(walls);
-}
 
-/* ================================================================== *
- *  FLOOR
- * ================================================================== */
-{
+  /* floor */
   const floorTex = makeFloorTexture(512);
   floorTex.repeat.set(W * 0.25, H * 0.25);
-
   const floorGeo = new THREE.PlaneGeometry(W * CELL, H * CELL);
   const floorMat = new THREE.MeshStandardMaterial({
     map: floorTex, color: 0x909888, roughness: 1.0, metalness: 0.0,
@@ -391,22 +337,10 @@ function stepShadow(dir) {
  *  PLAYER STATE
  * ================================================================== */
 const player = {
-  pos: new THREE.Vector3(cellToWorldX(SPAWN_GX), 0, cellToWorldZ(SPAWN_GY)),
+  pos: new THREE.Vector3(0, 0, 0),
   vel: new THREE.Vector3(),
   yaw: 0, pitch: 0,
 };
-
-/* ================================================================== *
- *  SOUND + BAZOOKA
- * ================================================================== */
-const soundManager = new SoundManager(camera);
-soundManager.loadAll('/sounds/');
-
-const bazooka = new Bazooka({
-  camera, scene,
-  getSCP: () => scpAI,
-  grid, W, H, CELL, originX, originZ,
-});
 
 /* ================================================================== *
  *  POSTPROCESSING
@@ -421,10 +355,7 @@ composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
 
 const GradeShader = {
-  uniforms: {
-    tDiffuse:         { value: null },
-    vignetteStrength: { value: 1.05 },
-  },
+  uniforms: { tDiffuse: { value: null }, vignetteStrength: { value: 1.05 } },
   vertexShader: `
     varying vec2 vUv;
     void main() {
@@ -472,8 +403,7 @@ Object.assign(achievementEl.style, {
   backdropFilter: 'blur(8px)',
   pointerEvents: 'none',
   opacity: '0', transition: 'opacity .4s ease, transform .4s ease',
-  zIndex: '50', textAlign: 'center',
-  maxWidth: '520px',
+  zIndex: '50', textAlign: 'center', maxWidth: '520px',
 });
 document.body.appendChild(achievementEl);
 
@@ -495,7 +425,7 @@ function showAchievement(title, desc) {
 let huntTime = 0, isHunted = false, survivorAchieved = false;
 
 /* ================================================================== *
- *  MENU DOM + PLAYER MODEL
+ *  MENU DOM
  * ================================================================== */
 const overlay       = document.getElementById('overlay');
 const playBtn       = document.getElementById('play-btn');
@@ -507,10 +437,14 @@ const menuSubEl     = document.getElementById('menu-subtitle');
 const menuKeysEl    = document.getElementById('menu-keys');
 const debugHudEl    = document.getElementById('debug-hud');
 const debugStateEl  = document.getElementById('debug-state');
+const debugCountEl  = document.getElementById('debug-count');
+const usernameInput = document.getElementById('username');
+const errorMsgEl    = document.getElementById('error-msg');
 
-let hasStarted  = false;
-let manualLock  = false;
-let menuState   = 'loading';   // 'loading' | 'no-models' | 'ready'
+let hasStarted = false;
+let manualLock = false;
+let menuState = 'loading';
+let netReady  = false;
 
 const preview = makePreviewScene(previewCanvas);
 let selectedModelIdx = 1;
@@ -519,28 +453,24 @@ let previewClones = {};
 let playerModel = null;
 
 /* ================================================================== *
- *  LANGUAGE
+ *  i18n APPLICATION
  * ================================================================== */
 function setMenuState(s) {
   menuState = s;
-  if (s === 'loading') {
-    playBtn.disabled = true;
-    playBtn.textContent = t('loading');
-  } else if (s === 'no-models') {
-    playBtn.disabled = true;
-    playBtn.textContent = t('noModels');
-  } else {
-    playBtn.disabled = false;
-    playBtn.textContent = t('play');
-  }
+  const canPlay = (s === 'ready' || s === 'connecting') && netReady;
+  playBtn.disabled = !canPlay;
+  if (s === 'loading')     playBtn.textContent = t('loading');
+  else if (s === 'no-models') playBtn.textContent = t('noModels');
+  else if (s === 'connecting') playBtn.textContent = t('connecting');
+  else playBtn.textContent = t('play');
 }
 
 function applyLanguage() {
   document.documentElement.lang = lang;
-
   menuTitleEl.textContent = t('title');
   menuSubEl.textContent   = t('subtitle');
   menuKeysEl.textContent  = t('controls');
+  usernameInput.placeholder = t('usernamePlaceholder');
 
   document.querySelector('.card[data-model="1"] .card-title').textContent = t('card1Title');
   document.querySelector('.card[data-model="1"] .card-sub').textContent   = t('card1Sub');
@@ -548,11 +478,8 @@ function applyLanguage() {
   document.querySelector('.card[data-model="2"] .card-sub').textContent   = t('card2Sub');
 
   langBtn.textContent = t('langLabel');
-
-  /* play button follows menuState */
   setMenuState(menuState);
 
-  /* preview hint reflects current selection */
   if (previewClones[selectedModelIdx]) {
     previewHint.textContent = t('dragRotate', selectedModelIdx);
   } else if (menuState === 'loading') {
@@ -562,33 +489,19 @@ function applyLanguage() {
   }
 }
 
-function setLanguage(l) {
-  lang = l;
-  applyLanguage();
-  console.log(`[i18n] language → ${l}`);
-}
-
-function toggleLanguage() {
-  setLanguage(lang === 'en' ? 'pt' : 'en');
-}
-
-langBtn.addEventListener('click', (e) => {
-  e.stopPropagation();
-  toggleLanguage();
-});
-
-/* initial paint */
+function setLanguage(l) { lang = l; applyLanguage(); }
+function toggleLanguage() { setLanguage(lang === 'en' ? 'pt' : 'en'); }
+langBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleLanguage(); });
 applyLanguage();
 
 /* ================================================================== *
- *  PREVIEW + CARD SELECTION
+ *  PREVIEW
  * ================================================================== */
 function selectModelCard(n) {
   selectedModelIdx = n;
   document.querySelectorAll('.card').forEach(c => {
     c.classList.toggle('selected', Number(c.dataset.model) === n);
   });
-
   preview.group.clear();
   const clone = previewClones[n];
   if (clone) {
@@ -601,7 +514,6 @@ function selectModelCard(n) {
     const center = box2.getCenter(new THREE.Vector3());
     clone.position.x -= center.x;
     clone.position.z -= center.z;
-
     framePreview(preview.group, preview.cam, previewCanvas);
     previewHint.textContent = t('dragRotate', n);
     previewHint.style.display = 'block';
@@ -622,38 +534,31 @@ function selectModelCard(n) {
 }
 
 document.querySelectorAll('.card').forEach(card => {
-  card.addEventListener('click', () => {
-    selectModelCard(Number(card.dataset.model));
-  });
+  card.addEventListener('click', () => selectModelCard(Number(card.dataset.model)));
 });
 
+/* ================================================================== *
+ *  MODEL LOADING
+ * ================================================================== */
 async function loadPlayerModels() {
   const loader = new GLTFLoader();
   const paths = {
     1: '/models/playermodel1.glb',
     2: '/models/playermodel2.glb',
   };
-
   for (const [k, path] of Object.entries(paths)) {
     try {
       const gltf = await loader.loadAsync(path);
       loadedModels[k] = gltf;
-
       const previewClone = cloneSkinned(gltf.scene);
       previewClone.traverse(o => {
-        if (o.isMesh || o.isSkinnedMesh) {
-          o.castShadow = true;
-          o.receiveShadow = true;
-        }
+        if (o.isMesh || o.isSkinnedMesh) { o.castShadow = true; o.receiveShadow = true; }
       });
       previewClones[k] = previewClone;
-
-      console.log(`[PlayerModel:${k}] loaded from ${path}`);
     } catch (err) {
-      console.warn(`[PlayerModel:${k}] failed to load ${path}`, err);
+      console.warn(`[PlayerModel:${k}] failed`, err);
     }
   }
-
   if (loadedModels[1])      selectedModelIdx = 1;
   else if (loadedModels[2]) selectedModelIdx = 2;
 
@@ -664,7 +569,6 @@ async function loadPlayerModels() {
     setMenuState('no-models');
   }
 }
-
 loadPlayerModels();
 
 function resizePreview() {
@@ -678,16 +582,29 @@ window.addEventListener('resize', resizePreview);
 setTimeout(resizePreview, 0);
 
 /* ================================================================== *
- *  START GAME
+ *  NETWORK CONNECT
  * ================================================================== */
-function startGame() {
-  if (!loadedModels[selectedModelIdx]) return;
+async function connectToServer() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = `${proto}//${location.host}`;
+  console.log(`[net] connecting to ${url}`);
+  try {
+    await net.connect(url);
+    netReady = true;
+    setMenuState(menuState === 'loading' ? 'ready' : menuState);
+    console.log('[net] ready');
+  } catch (err) {
+    console.error('[net] failed', err);
+    errorMsgEl.textContent = t('errConn');
+  }
+}
+connectToServer();
 
-  hasStarted = true;
-  overlay.classList.add('hidden');
-
-  preview.group.remove(previewClones[selectedModelIdx]);
-
+/* ================================================================== *
+ *  PLAYER MODEL INSTANCES (local + remote)
+ * ================================================================== */
+function spawnLocalPlayerModel() {
+  if (playerModel) return;
   playerModel = new PlayerModel({
     scene,
     gltf: loadedModels[selectedModelIdx],
@@ -695,17 +612,188 @@ function startGame() {
   });
   playerModel.setVisible(zoomT >= FP_THRESHOLD);
   playerModel.syncTransform(player.pos, player.yaw);
+}
 
+/** Remote players: id -> { model, playerModel } */
+const remotePlayers = new Map();
+
+function spawnRemotePlayer(remote) {
+  if (remote.id === net.id) return;
+  if (remotePlayers.has(remote.id)) return;
+  const gltf = loadedModels[remote.model] || loadedModels[1];
+  if (!gltf) return;
+
+  const pm = new PlayerModel({
+    scene,
+    gltf,
+    name: `remote${remote.id}`,
+  });
+  pm.setVisible(true);
+  pm.syncTransform(new THREE.Vector3(remote.x, 0, remote.z), remote.yaw);
+
+  /* nametag sprite */
+  const canvas = document.createElement('canvas');
+  canvas.width = 512; canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(0, 0, 512, 128);
+  ctx.font = 'bold 56px monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#ffe6a7';
+  ctx.fillText(remote.username.slice(0, 20), 256, 64);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: tex, depthTest: false, transparent: true,
+  }));
+  sprite.scale.set(3, 0.75, 1);
+  sprite.renderOrder = 999;
+  scene.add(sprite);
+
+  remotePlayers.set(remote.id, {
+    model: pm,
+    sprite,
+    lastYaw: remote.yaw,
+    lastX: remote.x,
+    lastZ: remote.z,
+    _smoothedX: remote.x,
+    _smoothedZ: remote.z,
+  });
+}
+
+function despawnRemotePlayer(id) {
+  const r = remotePlayers.get(id);
+  if (!r) return;
+  scene.remove(r.model.model);
+  scene.remove(r.sprite);
+  if (r.sprite.material.map) r.sprite.material.map.dispose();
+  r.sprite.material.dispose();
+  remotePlayers.delete(id);
+}
+
+/* ================================================================== *
+ *  PLAY (join server)
+ * ================================================================== */
+function startGame() {
+  const username = usernameInput.value.trim().slice(0, 20);
+  if (!username) {
+    errorMsgEl.textContent = t('errUsername');
+    return;
+  }
+  if (!net.isConnected()) {
+    errorMsgEl.textContent = t('errConn');
+    return;
+  }
+  errorMsgEl.textContent = '';
+  errorMsgEl.classList.remove('ok');
+
+  net.sendJoin(username, selectedModelIdx);
+  setMenuState('connecting');
+}
+
+playBtn.addEventListener('click', (e) => { e.stopPropagation(); startGame(); });
+usernameInput.addEventListener('keydown', (e) => {
+  if (e.code === 'Enter') startGame();
+  e.stopPropagation();
+});
+
+/* ================================================================== *
+ *  NETWORK EVENTS
+ * ================================================================== */
+net.on('error', (msg) => {
+  console.warn('[net] error:', msg.msg);
+  errorMsgEl.textContent = msg.msg === 'Username already taken'
+    ? t('errTaken')
+    : msg.msg;
+  setMenuState('ready');
+});
+
+net.on('welcome', (msg) => {
+  maze = msg.maze;
+  buildWorld();
+
+  /* position player */
+  player.pos.set(msg.spawn.x, 0, msg.spawn.z);
+  player.vel.set(0, 0, 0);
+  player.yaw = 0; player.pitch = 0;
+
+  hasStarted = true;
+  overlay.classList.add('hidden');
   playBtn.disabled = true;
+
+  /* local player model */
+  spawnLocalPlayerModel();
+
+  /* remote players already on the server */
+  for (const p of msg.players) spawnRemotePlayer(p);
+
+  /* load SCP */
+  loadSCP096(scene, new THREE.Vector3(0, 0, 0)).then((res) => {
+    if (!res) return;
+    scpRenderer = new SCP096Renderer({
+      model: res.model,
+      gltf: res.gltf,
+      scene,
+    });
+    if (net.scp) scpRenderer.applyServerState(net.scp);
+  });
 
   canvas.requestPointerLock();
   soundManager.resumeContext();
-}
-
-playBtn.addEventListener('click', (e) => {
-  e.stopPropagation();
-  startGame();
+  console.log(`[game] joined as "${msg.username}" (#${msg.id})`);
 });
+
+net.on('player_joined', (p) => {
+  console.log(`[game] ${p.username} joined`);
+  spawnRemotePlayer(p);
+});
+
+net.on('player_left', (id) => {
+  const r = remotePlayers.get(id);
+  if (r) console.log(`[game] remote player left`);
+  despawnRemotePlayer(id);
+});
+
+net.on('killed', (msg) => {
+  /* server says we died — teleport us back to spawn */
+  player.pos.set(msg.x, 0, msg.z);
+  player.vel.set(0, 0, 0);
+  endJumpscare();
+  if (!survivorAchieved) { huntTime = 0; isHunted = false; }
+  if (zoomT < FP_THRESHOLD && document.pointerLockElement !== canvas) {
+    canvas.requestPointerLock();
+  }
+  console.log('[game] killed — respawned');
+});
+
+net.on('scp_event', (msg) => {
+  if (msg.event === 'chase_start' && msg.targetId === net.id) {
+    isHunted = true; huntTime = 0;
+  }
+  if (msg.event === 'threat_added' && msg.playerId === net.id) {
+    console.log('[game] you got added to SCP threat list');
+  }
+  if (msg.event === 'kill_start' && msg.playerId === net.id) {
+    /* trigger jumpscare locally */
+    startJumpscare();
+  }
+});
+
+/* ================================================================== *
+ *  SOUND MANAGER + BAZOOKA
+ * ================================================================== */
+const soundManager = new SoundManager(camera);
+soundManager.loadAll('/sounds/');
+
+const bazooka = new Bazooka({
+  camera, scene,
+  getSCP: () => scpRenderer,   // stub — server handles hits
+  grid: [], W: 0, H: 0, CELL, originX: 0, originZ: 0,
+});
+
+let scpRenderer = null;
 
 /* ================================================================== *
  *  INPUT
@@ -715,58 +803,34 @@ const canvas = renderer.domElement;
 
 let debugMode = false;
 
-const DEBUG_STATES = ['IDLE', 'PANIC', 'CHASE', 'ATTACK'];
-
 function toggleDebugMode() {
   debugMode = !debugMode;
   debugHudEl.style.display = debugMode ? 'block' : 'none';
-  console.log(`[debug] ${debugMode ? 'ON' : 'OFF'}`);
 }
-
 function cycleDebugState() {
-  if (!scpAI) return;
-
-  /* clear any active stun so state switches take effect immediately */
-  scpAI.stunned = false;
-  scpAI.stunTimer = 0;
-
-  const cur = DEBUG_STATES.indexOf(scpAI.state);
-  const next = DEBUG_STATES[(cur + 1) % DEBUG_STATES.length];
-
-  console.log(`[debug] SCP state: ${scpAI.state} → ${next}`);
-
-  switch (next) {
-    case 'IDLE':   scpAI._enterIdle();   break;
-    case 'PANIC':  scpAI._enterPanic();  break;
-    case 'CHASE':  scpAI._enterChase();  break;
-    case 'ATTACK': scpAI._enterAttack(); break;
-  }
+  /* server-side state, so this is now a client-only preview — log it */
+  if (!net.scp) return;
+  const states = ['IDLE', 'PANIC', 'CHASE', 'ATTACK'];
+  const cur = states.indexOf(net.scp.state);
+  const next = states[(cur + 1) % states.length];
+  console.log(`[debug] server-side state is "${net.scp.state}". Cycle is client-only — server would need a debug endpoint.`);
 }
-
-document.addEventListener('pointerlockchange', () => {
-  const locked = document.pointerLockElement === canvas;
-  if (!hasStarted) overlay.classList.toggle('hidden', !locked && false);
-});
 
 window.addEventListener('keydown', (e) => {
-  /* language works even before starting */
   if (e.code === 'KeyL') {
     e.preventDefault();
     if (!e.repeat) toggleLanguage();
     return;
   }
-
   if (!hasStarted) return;
 
   if (e.code === 'ControlLeft' || e.code === 'ControlRight') {
     e.preventDefault();
     if (e.repeat) return;
     if (document.pointerLockElement === canvas) {
-      manualLock = false;
-      document.exitPointerLock();
+      manualLock = false; document.exitPointerLock();
     } else {
-      manualLock = true;
-      canvas.requestPointerLock();
+      manualLock = true; canvas.requestPointerLock();
     }
     return;
   }
@@ -775,21 +839,10 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyQ')      { e.preventDefault(); if (!e.repeat) toggleHighlight(); return; }
   if (e.code === 'KeyE')      { e.preventDefault(); if (!e.repeat) togglePath(); return; }
   if (e.code === 'KeyP')      { e.preventDefault(); if (!e.repeat) window.__togglePostFX(); return; }
-  if (e.code === 'KeyH') {
-    e.preventDefault();
-    if (!e.repeat && scpAI) scpAI.toggleFaceHitbox();
-    return;
-  }
-  if (e.code === 'KeyB') {
-    e.preventDefault();
-    if (!e.repeat) toggleDebugMode();
-    return;
-  }
-  if (e.code === 'KeyF') {
-    e.preventDefault();
-    if (!e.repeat && debugMode) cycleDebugState();
-    return;
-  }
+  if (e.code === 'KeyH')      { e.preventDefault(); if (!e.repeat) {} return; }
+  if (e.code === 'KeyB')      { e.preventDefault(); if (!e.repeat) toggleDebugMode(); return; }
+  if (e.code === 'KeyF')      { e.preventDefault(); if (!e.repeat && debugMode) cycleDebugState(); return; }
+
   keys[e.code] = true;
   if (['ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
 }, true);
@@ -800,7 +853,13 @@ let rightDragging = false, lastX = 0, lastY = 0;
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 canvas.addEventListener('mousedown', (e) => {
   if (!hasStarted) return;
-  if (e.button === 0 && !jumpscare.active) bazooka.fire();
+  if (e.button === 0 && !jumpscare.active) {
+    /* fire locally for feel + tell server */
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    const o = camera.position.clone().add(dir.clone().multiplyScalar(1.2));
+    net.sendFire(o.x, o.y, o.z, dir.x, dir.y, dir.z);
+  }
   if (e.button === 2) { rightDragging = true; lastX = e.clientX; lastY = e.clientY; }
 });
 window.addEventListener('mouseup', (e) => { if (e.button === 2) rightDragging = false; });
@@ -833,8 +892,7 @@ window.addEventListener('wheel', (e) => {
   zoomT = Math.max(0, Math.min(1, zoomT + e.deltaY * 0.0012));
   const isFP = zoomT < FP_THRESHOLD;
   if (!wasFP && isFP && document.pointerLockElement !== canvas) {
-    manualLock = false;
-    canvas.requestPointerLock();
+    manualLock = false; canvas.requestPointerLock();
   }
   if (wasFP && !isFP && !manualLock && document.pointerLockElement === canvas) {
     document.exitPointerLock();
@@ -842,10 +900,9 @@ window.addEventListener('wheel', (e) => {
 }, { passive: false });
 
 /* ================================================================== *
- *  HIGHLIGHT MODE
+ *  HIGHLIGHT / PATH (same idea as before)
  * ================================================================== */
 let highlightActive = false, highlightMarker = null;
-
 function makeHighlightMarker() {
   const group = new THREE.Group();
   const glow = new THREE.Mesh(
@@ -868,9 +925,8 @@ function makeHighlightMarker() {
   group.add(glow, core, beam);
   return group;
 }
-
 function toggleHighlight() {
-  if (!scpAI) { console.info('[highlight] no SCP loaded'); return; }
+  if (!scpRenderer) return;
   highlightActive = !highlightActive;
   if (!highlightMarker) {
     highlightMarker = makeHighlightMarker();
@@ -879,12 +935,9 @@ function toggleHighlight() {
   highlightMarker.visible = highlightActive;
 }
 
-/* ================================================================== *
- *  PATH VISUALIZER
- * ================================================================== */
 let pathActive = false, pathMesh = null;
-
 function computePathCells(sx, sy, gx, gy) {
+  if (!grid) return null;
   const sIdx = sy * W + sx, gIdx = gy * W + gx;
   if (sIdx === gIdx || grid[sIdx] === 1 || grid[gIdx] === 1) return null;
   const visited = new Int32Array(W * H).fill(-1);
@@ -913,7 +966,6 @@ function computePathCells(sx, sy, gx, gy) {
   cells.push(sIdx); cells.reverse();
   return cells.map(i => ({ gx: i % W, gy: (i / W) | 0 }));
 }
-
 function togglePath() {
   if (!pathActive && !pathMesh) {
     pathMesh = new THREE.Line(
@@ -927,17 +979,16 @@ function togglePath() {
   pathActive = !pathActive;
   pathMesh.visible = pathActive;
 }
-
 let _lastPathKey = '';
 function updatePathLine() {
-  if (!pathActive || !pathMesh || !scpAI) {
+  if (!pathActive || !pathMesh || !scpRenderer || !grid) {
     if (pathMesh) pathMesh.visible = false;
     return;
   }
   const sx = Math.max(0, Math.min(W - 1, Math.floor((player.pos.x - originX) / CELL)));
   const sy = Math.max(0, Math.min(H - 1, Math.floor((player.pos.z - originZ) / CELL)));
-  const gx = Math.max(0, Math.min(W - 1, Math.floor((scpAI.model.position.x - originX) / CELL)));
-  const gy = Math.max(0, Math.min(H - 1, Math.floor((scpAI.model.position.z - originZ) / CELL)));
+  const gx = Math.max(0, Math.min(W - 1, Math.floor((scpRenderer.model.position.x - originX) / CELL)));
+  const gy = Math.max(0, Math.min(H - 1, Math.floor((scpRenderer.model.position.z - originZ) / CELL)));
   const key = `${sx},${sy}->${gx},${gy}`;
   if (key === _lastPathKey) { pathMesh.visible = true; return; }
   _lastPathKey = key;
@@ -955,6 +1006,7 @@ function updatePathLine() {
  *  COLLISION
  * ================================================================== */
 function collides(x, z, r) {
+  if (!grid) return false;
   const gx0 = Math.floor((x - r - originX) / CELL);
   const gx1 = Math.floor((x + r - originX) / CELL);
   const gy0 = Math.floor((z - r - originZ) / CELL);
@@ -968,11 +1020,10 @@ function collides(x, z, r) {
 }
 
 /* ================================================================== *
- *  FPS / ADAPTIVE
+ *  FPS
  * ================================================================== */
 const fpsEl = document.getElementById('fps');
 let frames = 0, fpsWindowStart = performance.now(), badSamples = 0;
-
 function evaluateFps(now) {
   const elapsed = now - fpsWindowStart;
   if (elapsed < 1000) return;
@@ -991,10 +1042,9 @@ function evaluateFps(now) {
 }
 
 /* ================================================================== *
- *  JUMPSCARE / RESPAWN
+ *  JUMPSCARE (client-side camera effect)
  * ================================================================== */
 const jumpscare = { active: false };
-
 function startJumpscare() {
   jumpscare.active = true;
   if (document.pointerLockElement) document.exitPointerLock();
@@ -1003,48 +1053,19 @@ function startJumpscare() {
 }
 function endJumpscare() { jumpscare.active = false; }
 
-function respawnPlayer() {
-  player.pos.set(cellToWorldX(SPAWN_GX), 0, cellToWorldZ(SPAWN_GY));
-  player.vel.set(0, 0, 0);
-  player.yaw = 0; player.pitch = 0;
-  endJumpscare();
-  if (!survivorAchieved) { huntTime = 0; isHunted = false; }
-
-  /* re-lock if the player was in first person */
-  if (zoomT < FP_THRESHOLD && document.pointerLockElement !== canvas) {
-    canvas.requestPointerLock();
-  }
-}
-
 /* ================================================================== *
- *  SCP-096
+ *  STATE UPLOAD (throttled)
  * ================================================================== */
-let scpAI = null;
-const scpSpawnPos = new THREE.Vector3(
-  cellToWorldX(scpSpawnCell.gx), 0, cellToWorldZ(scpSpawnCell.gy)
-);
-
-soundManager.onReady = () => {
-  if (scpAI && scpAI.refreshSoundState) scpAI.refreshSoundState();
-};
-
-loadSCP096(scene, scpSpawnPos).then((res) => {
-  if (!res) return;
-  scpAI = new SCP096AI({
-    model: res.model, gltf: res.gltf, scene,
-    grid, W, H, CELL, originX, originZ,
-    camera, player,
-    sounds: soundManager,
-    eyeHeight: EYE_HEIGHT,
-  });
-  scpAI.onKill = (phase) => {
-    if (phase === 'start')   startJumpscare();
-    if (phase === 'respawn') respawnPlayer();
-    if (phase === 'done')    endJumpscare();
-  };
-  window.__scpAI = scpAI;
-  if (soundManager._readyFired) scpAI.refreshSoundState();
-});
+let lastUpload = 0;
+function uploadState(dt) {
+  if (!hasStarted || !net.isConnected()) return;
+  lastUpload += dt;
+  if (lastUpload < 0.05) return;   // 20 Hz
+  lastUpload = 0;
+  const vel = Math.hypot(player.vel.x, player.vel.z);
+  const running = !!(keys['ShiftLeft'] || keys['ShiftRight']);
+  net.sendState(player.pos.x, player.pos.z, player.yaw, player.pitch, vel, running);
+}
 
 /* ================================================================== *
  *  GAME LOOP
@@ -1058,9 +1079,10 @@ const _jsHead    = new THREE.Vector3();
 const _lookAt    = new THREE.Vector3();
 
 function updateCamera(dt) {
-  if (jumpscare.active && scpAI && scpAI.headBone) {
-    scpAI.headBone.getWorldPosition(_jsHead);
-    const yaw = scpAI.model.rotation.y;
+  if (jumpscare.active && scpRenderer) {
+    scpRenderer.model.getWorldPosition(_jsHead);
+    _jsHead.y += 1.6;
+    const yaw = scpRenderer.model.rotation.y;
     const fx = Math.sin(yaw), fz = Math.cos(yaw);
     const camX = _jsHead.x + fx * 1.55;
     const camY = _jsHead.y + 0.18;
@@ -1091,7 +1113,6 @@ function updateCamera(dt) {
   const d = TP_MIN + t * (TP_MAX - TP_MIN);
   const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
   const cp = Math.cos(pitch), sp = Math.sin(pitch);
-
   camera.position.set(
     px - fx * cp * d,
     EYE_HEIGHT + (-sp) * d,
@@ -1125,38 +1146,65 @@ function update(dt) {
   const nz = player.pos.z + player.vel.z * dt;
   if (!collides(player.pos.x, nz, PLAYER_RADIUS)) player.pos.z = nz; else player.vel.z = 0;
 
-  if (scpAI) scpAI.update(dt);
+  uploadState(dt);
   bazooka.update(dt);
   bazooka.setFirstPerson(zoomT < FP_THRESHOLD);
 
-  if (playerModel) {
+  if (playerModel && hasStarted) {
     const isFP = zoomT < FP_THRESHOLD;
     playerModel.setVisible(!isFP);
     playerModel.syncTransform(player.pos, player.yaw);
-
     const speed = Math.hypot(player.vel.x, player.vel.z);
     const running = !!(keys['ShiftLeft'] || keys['ShiftRight']);
     playerModel.setMotion(speed, running);
     playerModel.update(dt);
   }
 
-  if (highlightActive && highlightMarker && scpAI) {
-    highlightMarker.position.copy(scpAI.model.position);
+  /* remote players */
+  for (const [id, r] of remotePlayers) {
+    const remote = net.players.get(id);
+    if (!remote) continue;
+
+    /* interpolate */
+    const t = Math.min(1, dt * 12);
+    r._smoothedX += (remote.x - r._smoothedX) * t;
+    r._smoothedZ += (remote.z - r._smoothedZ) * t;
+
+    r.model.syncTransform(new THREE.Vector3(r._smoothedX, 0, r._smoothedZ), remote.yaw);
+
+    const speed = remote.vel || 0;
+    const running = !!remote.running;
+    r.model.setMotion(speed, running);
+    r.model.update(dt);
+
+    /* nametag position */
+    r.sprite.position.set(r._smoothedX, 3.1, r._smoothedZ);
+  }
+
+  /* SCP render from server */
+  if (scpRenderer && net.scp) {
+    scpRenderer.applyServerState(net.scp);
+    scpRenderer.update(dt);
+  }
+
+  if (highlightActive && highlightMarker && scpRenderer) {
+    highlightMarker.position.copy(scpRenderer.model.position);
     highlightMarker.position.y += 4.2;
   }
 
   if (pathActive) updatePathLine();
 
-  if (scpAI) {
-    const chasing = scpAI.state === 'CHASE' && !jumpscare.active;
-    if (chasing) {
+  /* achievement */
+  if (net.scp) {
+    const chasingMe = net.scp.state === 'CHASE' && net.scp.targetId === net.id && !jumpscare.active;
+    if (chasingMe) {
       if (!isHunted) { isHunted = true; huntTime = 0; }
       huntTime += dt;
       if (!survivorAchieved && huntTime >= 30) {
         survivorAchieved = true;
         showAchievement(t('achName'), t('achDesc'));
       }
-    } else if (isHunted && scpAI.state !== 'PANIC') {
+    } else if (isHunted && net.scp.state !== 'PANIC') {
       isHunted = false; huntTime = 0;
     }
   }
@@ -1172,8 +1220,13 @@ function updatePreview(dt) {
 
 function updateDebugHud() {
   if (!debugMode) return;
-  if (scpAI) debugStateEl.textContent = scpAI.state;
-  else       debugStateEl.textContent = '(not loaded)';
+  if (net.scp) {
+    debugStateEl.textContent = net.scp.state;
+    debugCountEl.textContent = remotePlayers.size + (hasStarted ? 1 : 0);
+  } else {
+    debugStateEl.textContent = '--';
+    debugCountEl.textContent = '0';
+  }
 }
 
 function animate() {
