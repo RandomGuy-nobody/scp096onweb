@@ -4,6 +4,7 @@ const CLIP = {
   sit:           'scp096_skeleton|sit',
   sit2start:     'scp096_skeleton|sit2start',
   sit2:          'scp096_skeleton|sit2',
+  sit2end:       'scp096_skeleton|sit2end',
   getup:         'scp096_skeleton|getup',
   panicstart1:   'scp096_skeleton|panicstart1',
   panic:         'scp096_skeleton|panic',
@@ -242,6 +243,7 @@ export class SCP096Renderer {
     if (this.idleTimer > 0) return;
 
     if (this.idlePhase === 'sit') {
+      /* sit → sit2start → sit2 */
       this.idlePhase = 'sit2';
       this.idleTimer = 15;
       this._playOnce('sit2start', () => {
@@ -252,10 +254,16 @@ export class SCP096Renderer {
       });
       this.currentAnim = 'sit2start';
     } else {
+      /* sit2 → sit2end → sit */
       this.idlePhase = 'sit';
       this.idleTimer = 15;
-      this._playLoop('sit');
-      this.currentAnim = 'sit';
+      this._playOnce('sit2end', () => {
+        if (this.state === 'IDLE' && this.idlePhase === 'sit') {
+          this._playLoop('sit');
+          this.currentAnim = 'sit';
+        }
+      });
+      this.currentAnim = 'sit2end';
     }
   }
 
