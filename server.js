@@ -6,6 +6,7 @@ import { WebSocketServer } from 'ws';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
+const BUILD_TAG = 'v3-stun-debug';
 
 /* ================================================================== *
  *  STATIC
@@ -115,6 +116,7 @@ const originZ = -(maze.H * CELL) / 2;
 const cellToWorldX = gx => originX + gx * CELL + CELL / 2;
 const cellToWorldZ = gy => originZ + gy * CELL + CELL / 2;
 
+console.log(`[server] BUILD ${BUILD_TAG}`);
 console.log(`[server] maze ${maze.W}x${maze.H} — spawn (${maze.SPAWN_GX},${maze.SPAWN_GY}) — SCP (${maze.scpCell.gx},${maze.scpCell.gy})`);
 
 /* ================================================================== *
@@ -133,6 +135,8 @@ const ATTACKRUNSTART_DUR   = 1.208;
 const ATTACK_JUMP_DUR      = 1.042;
 const ATTACK_KILL_AT       = 1.5;
 const ATTACK_TOTAL         = ATTACK_JUMP_DUR + 6.875;
+const STUN_DURATION        = 1.5;
+const STUN_MAX_DISTANCE    = 40;
 
 const scp = {
   x: cellToWorldX(maze.scpCell.gx),
@@ -143,7 +147,6 @@ const scp = {
   stateTime: 0,
   targetId: null,
   threatList: [],
-  stunned: false,
   stunTimer: 0,
   killFired: false,
   chaseTimer: 0,
@@ -157,7 +160,7 @@ function publicPlayer(p) {
   };
 }
 function publicScpPos() {
-  return { x: scp.x, z: scp.z, yaw: scp.yaw, stunned: scp.stunned };
+  return { x: scp.x, z: scp.z, yaw: scp.yaw, stunned: scp.state === 'STUNNED' };
 }
 function publicScpState() {
   return {
@@ -229,10 +232,9 @@ function bfsPath(sx, sy, gx, gy) {
 }
 
 /* ================================================================== *
- *  PERCEPTION — FIXED MATH
+ *  PERCEPTION
  * ================================================================== */
 function isPlayerLookingAtFace(p) {
-  /* eye at 2.4u, SCP face at roughly 2.0u */
   const EYE_Y  = 2.4;
   const FACE_Y = 2.0;
 
@@ -243,7 +245,6 @@ function isPlayerLookingAtFace(p) {
   if (dist > 42) return false;
   if (dist < 0.5) return true;
 
-  /* player's full 3D view direction, unit length */
   const cp = Math.cos(p.pitch || 0);
   const sp = Math.sin(p.pitch || 0);
   const vx = -Math.sin(p.yaw) * cp;
@@ -254,7 +255,6 @@ function isPlayerLookingAtFace(p) {
   const dot = vx * ndx + vy * ndy + vz * ndz;
   if (dot < Math.cos(Math.PI / 4.5)) return false;
 
-  /* SCP's own face direction must point at the player */
   const fdx = Math.sin(scp.yaw), fdz = Math.cos(scp.yaw);
   const toPX = p.x - scp.x, toPZ = p.z - scp.z;
   const toPLen = Math.hypot(toPX, toPZ) || 1e-6;
@@ -263,7 +263,7 @@ function isPlayerLookingAtFace(p) {
 }
 
 /* ================================================================== *
- *  STATE MACHINE
+ *  STATE TRANSITIONS
  * ================================================================== */
 function enterIdle() {
   scp.state = 'IDLE';
@@ -272,6 +272,7 @@ function enterIdle() {
   scp.targetId = null;
   scp.killFired = false;
   scp.chaseTimer = 0;
+  scp.stunTimer = 0;
   broadcastScpState();
   console.log('[scp] → IDLE');
 }
@@ -280,6 +281,7 @@ function enterPanic() {
   scp.state = 'PANIC';
   scp.substate = null;
   scp.stateTime = 0;
+  scp.stunTimer = 0;
   broadcastScpState();
   broadcast({ type: 'scp_event', event: 'rage_start' });
   console.log(`[scp] → PANIC (rage for ${RAGE_DURATION}s) threatList=[${scp.threatList}]`);
@@ -291,6 +293,7 @@ function enterChase(targetId) {
   scp.stateTime = 0;
   scp.targetId = targetId;
   scp.chaseTimer = 0;
+  scp.stunTimer = 0;
   scpPath = null;
   scpPathIdx = 0;
   repathTimer = 0;
@@ -304,9 +307,20 @@ function enterAttack() {
   scp.substate = 'attackjump';
   scp.stateTime = 0;
   scp.killFired = false;
+  scp.stunTimer = 0;
   broadcastScpState();
   broadcast({ type: 'scp_event', event: 'kill_start', playerId: scp.targetId });
   console.log(`[scp] → ATTACK → ${scp.targetId}`);
+}
+
+function enterStunned(duration, byUsername) {
+  scp.state = 'STUNNED';
+  scp.substate = null;
+  scp.stateTime = 0;
+  scp.stunTimer = duration;
+  scp.chaseTimer = 0;
+  broadcastScpState();
+  console.log(`[scp] → STUNNED for ${duration}s (by ${byUsername})`);
 }
 
 /* ================================================================== *
@@ -382,7 +396,6 @@ function tickChase(dt) {
     const b = worldToCell(tgt.x, tgt.z);
     scpPath = bfsPath(a.gx, a.gy, b.gx, b.gy);
     scpPathIdx = 0;
-    /* skip past any node that's already behind us */
     if (scpPath) {
       while (scpPathIdx < scpPath.length) {
         const n = scpPath[scpPathIdx];
@@ -395,18 +408,11 @@ function tickChase(dt) {
 
   if (scpPath && scpPathIdx < scpPath.length) {
     let budget = CHASE_SPEED * dt;
-
-    /* roll over node boundaries without freezing */
     while (budget > 0 && scpPathIdx < scpPath.length) {
       const node = scpPath[scpPathIdx];
       const ndx = node.x - scp.x, ndz = node.z - scp.z;
       const nd = Math.hypot(ndx, ndz);
-
-      if (nd < 0.001) {
-        scpPathIdx++;
-        continue;
-      }
-
+      if (nd < 0.001) { scpPathIdx++; continue; }
       if (nd <= budget) {
         scp.x = node.x;
         scp.z = node.z;
@@ -443,7 +449,6 @@ function tickAttack(dt) {
       scp.killFired = true;
       const tgt = players.get(scp.targetId);
       if (tgt) {
-        /* teleport SERVER-side too, so SCP can't immediately re-kill */
         tgt.x = cellToWorldX(maze.SPAWN_GX);
         tgt.z = cellToWorldZ(maze.SPAWN_GY);
         tgt.vel = 0;
@@ -465,21 +470,23 @@ function tickAttack(dt) {
   }
 }
 
-function tickScp(dt) {
-  if (scp.stunned) {
-    scp.stunTimer -= dt;
-    if (scp.stunTimer <= 0) {
-      scp.stunned = false;
-      broadcastScpState();
-    }
-    return;
+function tickStunned(dt) {
+  scp.stunTimer -= dt;
+  if (scp.stunTimer <= 0) {
+    const tgt = scp.targetId && players.get(scp.targetId);
+    if (tgt) enterChase(scp.targetId);
+    else enterIdle();
   }
+}
+
+function tickScp(dt) {
   scp.stateTime += dt;
   switch (scp.state) {
-    case 'IDLE':   tickIdle(dt);   break;
-    case 'PANIC':  tickPanic(dt);  break;
-    case 'CHASE':  tickChase(dt);  break;
-    case 'ATTACK': tickAttack(dt); break;
+    case 'IDLE':    tickIdle(dt);    break;
+    case 'PANIC':   tickPanic(dt);   break;
+    case 'CHASE':   tickChase(dt);   break;
+    case 'ATTACK':  tickAttack(dt);  break;
+    case 'STUNNED': tickStunned(dt); break;
   }
 }
 
@@ -499,6 +506,7 @@ wss.on('connection', (ws) => {
     let msg;
     try { msg = JSON.parse(raw); } catch (_) { return; }
 
+    /* ---- JOIN ---- */
     if (msg.type === 'join') {
       if (myId !== null) return;
       const name = String(msg.username || '').trim().slice(0, 20);
@@ -542,8 +550,12 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    if (myId === null) return;
+    if (myId === null) {
+      console.log(`[ws] ignoring message "${msg.type}" from unjoined socket`);
+      return;
+    }
 
+    /* ---- PLAYER STATE ---- */
     if (msg.type === 'state') {
       const p = players.get(myId);
       if (!p) return;
@@ -552,6 +564,37 @@ wss.on('connection', (ws) => {
       p.vel = msg.vel; p.running = msg.running;
       return;
     }
+
+    /* ---- BAZOOKA HIT ---- */
+    if (msg.type === 'stun_scp') {
+      const p = players.get(myId);
+      const d = p ? Math.hypot(p.x - scp.x, p.z - scp.z) : -1;
+      console.log(
+        `[ws] stun_scp received — from #${myId}` +
+        ` (${p?.username || 'unknown'})` +
+        ` state=${scp.state} dist=${d.toFixed(2)}`
+      );
+      if (!p) return;
+
+      /* Allow stun from CHASE, and also from ATTACK if the kill hasn't fired yet */
+      const killInProgress = scp.state === 'ATTACK' && scp.killFired;
+      if (scp.state !== 'CHASE' && !killInProgress) {
+        console.log(`[scp] stun rejected — state is ${scp.state}`);
+        return;
+      }
+      if (killInProgress) {
+        console.log(`[scp] stun rejected — kill already landed`);
+        return;
+      }
+      if (d > STUN_MAX_DISTANCE) {
+        console.log(`[scp] stun rejected — too far (${d.toFixed(1)}u > ${STUN_MAX_DISTANCE}u)`);
+        return;
+      }
+      enterStunned(STUN_DURATION, p.username);
+      return;
+    }
+
+    console.log(`[ws] unhandled message type "${msg.type}" from #${myId}`);
   });
 
   ws.on('close', () => {
