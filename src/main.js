@@ -95,7 +95,6 @@ function t(key, ...args) {
  * ================================================================== */
 const net = new NetworkClient();
 
-/* placeholder until server sends maze */
 let maze = null;
 let grid = null, W = 0, H = 0;
 let originX = 0, originZ = 0;
@@ -123,7 +122,7 @@ camera.rotation.order = 'YXZ';
 scene.add(camera);
 
 /* ================================================================== *
- *  SKY / LIGHTS (same as before)
+ *  SKY / LIGHTS
  * ================================================================== */
 const sunDir = new THREE.Vector3(0.55, 0.85, 0.35).normalize();
 
@@ -262,7 +261,7 @@ function makeWallBumpTexture(size = 256) {
 }
 
 /* ================================================================== *
- *  WORLD BUILD (after welcome)
+ *  WORLD BUILD
  * ================================================================== */
 let worldBuilt = false;
 
@@ -281,7 +280,6 @@ function buildWorld() {
   cellToWorldZ = gy => originZ + gy * CELL + CELL / 2;
   spawnWorld = { x: cellToWorldX(SPAWN_GX), z: cellToWorldZ(SPAWN_GY) };
 
-  /* shadows scale */
   const mazeExtent = Math.max(W, H) * CELL;
   const shadowExtent = mazeExtent * 0.62;
   sun.shadow.camera.left   = -shadowExtent;
@@ -291,7 +289,6 @@ function buildWorld() {
   sun.shadow.camera.updateProjectionMatrix();
   sun.position.copy(sunDir).multiplyScalar(shadowExtent * 2.4);
 
-  /* walls */
   const wallCells = [];
   for (let gy = 0; gy < H; gy++)
     for (let gx = 0; gx < W; gx++)
@@ -320,7 +317,6 @@ function buildWorld() {
   walls.receiveShadow = true;
   scene.add(walls);
 
-  /* floor */
   const floorTex = makeFloorTexture(512);
   floorTex.repeat.set(W * 0.25, H * 0.25);
   const floorGeo = new THREE.PlaneGeometry(W * CELL, H * CELL);
@@ -459,10 +455,10 @@ function setMenuState(s) {
   menuState = s;
   const canPlay = (s === 'ready' || s === 'connecting') && netReady;
   playBtn.disabled = !canPlay;
-  if (s === 'loading')     playBtn.textContent = t('loading');
-  else if (s === 'no-models') playBtn.textContent = t('noModels');
+  if (s === 'loading')         playBtn.textContent = t('loading');
+  else if (s === 'no-models')  playBtn.textContent = t('noModels');
   else if (s === 'connecting') playBtn.textContent = t('connecting');
-  else playBtn.textContent = t('play');
+  else                         playBtn.textContent = t('play');
 }
 
 function applyLanguage() {
@@ -601,7 +597,7 @@ async function connectToServer() {
 connectToServer();
 
 /* ================================================================== *
- *  PLAYER MODEL INSTANCES (local + remote)
+ *  PLAYER MODEL INSTANCES
  * ================================================================== */
 function spawnLocalPlayerModel() {
   if (playerModel) return;
@@ -614,7 +610,7 @@ function spawnLocalPlayerModel() {
   playerModel.syncTransform(player.pos, player.yaw);
 }
 
-/** Remote players: id -> { model, playerModel } */
+/** Remote players: id -> { model, sprite, smoothing } */
 const remotePlayers = new Map();
 
 function spawnRemotePlayer(remote) {
@@ -631,7 +627,6 @@ function spawnRemotePlayer(remote) {
   pm.setVisible(true);
   pm.syncTransform(new THREE.Vector3(remote.x, 0, remote.z), remote.yaw);
 
-  /* nametag sprite */
   const canvas = document.createElement('canvas');
   canvas.width = 512; canvas.height = 128;
   const ctx = canvas.getContext('2d');
@@ -655,9 +650,6 @@ function spawnRemotePlayer(remote) {
   remotePlayers.set(remote.id, {
     model: pm,
     sprite,
-    lastYaw: remote.yaw,
-    lastX: remote.x,
-    lastZ: remote.z,
     _smoothedX: remote.x,
     _smoothedZ: remote.z,
   });
@@ -674,21 +666,13 @@ function despawnRemotePlayer(id) {
 }
 
 /* ================================================================== *
- *  PLAY (join server)
+ *  PLAY
  * ================================================================== */
 function startGame() {
   const username = usernameInput.value.trim().slice(0, 20);
-  if (!username) {
-    errorMsgEl.textContent = t('errUsername');
-    return;
-  }
-  if (!net.isConnected()) {
-    errorMsgEl.textContent = t('errConn');
-    return;
-  }
+  if (!username) { errorMsgEl.textContent = t('errUsername'); return; }
+  if (!net.isConnected()) { errorMsgEl.textContent = t('errConn'); return; }
   errorMsgEl.textContent = '';
-  errorMsgEl.classList.remove('ok');
-
   net.sendJoin(username, selectedModelIdx);
   setMenuState('connecting');
 }
@@ -704,9 +688,7 @@ usernameInput.addEventListener('keydown', (e) => {
  * ================================================================== */
 net.on('error', (msg) => {
   console.warn('[net] error:', msg.msg);
-  errorMsgEl.textContent = msg.msg === 'Username already taken'
-    ? t('errTaken')
-    : msg.msg;
+  errorMsgEl.textContent = msg.msg === 'Username already taken' ? t('errTaken') : msg.msg;
   setMenuState('ready');
 });
 
@@ -714,7 +696,6 @@ net.on('welcome', (msg) => {
   maze = msg.maze;
   buildWorld();
 
-  /* position player */
   player.pos.set(msg.spawn.x, 0, msg.spawn.z);
   player.vel.set(0, 0, 0);
   player.yaw = 0; player.pitch = 0;
@@ -723,10 +704,7 @@ net.on('welcome', (msg) => {
   overlay.classList.add('hidden');
   playBtn.disabled = true;
 
-  /* local player model */
   spawnLocalPlayerModel();
-
-  /* remote players already on the server */
   for (const p of msg.players) spawnRemotePlayer(p);
 
   /* load SCP */
@@ -737,7 +715,8 @@ net.on('welcome', (msg) => {
       gltf: res.gltf,
       scene,
     });
-    if (net.scp) scpRenderer.applyServerState(net.scp);
+    if (msg.scpPos)   scpRenderer.setPosition(msg.scpPos);
+    if (msg.scpState) scpRenderer.setState(msg.scpState.state, msg.scpState.substate);
   });
 
   canvas.requestPointerLock();
@@ -751,13 +730,20 @@ net.on('player_joined', (p) => {
 });
 
 net.on('player_left', (id) => {
-  const r = remotePlayers.get(id);
-  if (r) console.log(`[game] remote player left`);
   despawnRemotePlayer(id);
+  console.log(`[game] remote player left`);
+});
+
+net.on('scp_state', (s) => {
+  if (scpRenderer) scpRenderer.setState(s.state, s.substate);
+
+  /* jumpscare: server says we're the target of an ATTACK */
+  if (s.state === 'ATTACK' && s.targetId === net.id && !jumpscare.active) {
+    startJumpscare();
+  }
 });
 
 net.on('killed', (msg) => {
-  /* server says we died — teleport us back to spawn */
   player.pos.set(msg.x, 0, msg.z);
   player.vel.set(0, 0, 0);
   endJumpscare();
@@ -775,10 +761,6 @@ net.on('scp_event', (msg) => {
   if (msg.event === 'threat_added' && msg.playerId === net.id) {
     console.log('[game] you got added to SCP threat list');
   }
-  if (msg.event === 'kill_start' && msg.playerId === net.id) {
-    /* trigger jumpscare locally */
-    startJumpscare();
-  }
 });
 
 /* ================================================================== *
@@ -787,13 +769,13 @@ net.on('scp_event', (msg) => {
 const soundManager = new SoundManager(camera);
 soundManager.loadAll('/sounds/');
 
+let scpRenderer = null;
+
 const bazooka = new Bazooka({
   camera, scene,
-  getSCP: () => scpRenderer,   // stub — server handles hits
+  getSCP: () => null,          // server-authoritative now; local bazooka is visual only
   grid: [], W: 0, H: 0, CELL, originX: 0, originZ: 0,
 });
-
-let scpRenderer = null;
 
 /* ================================================================== *
  *  INPUT
@@ -808,12 +790,8 @@ function toggleDebugMode() {
   debugHudEl.style.display = debugMode ? 'block' : 'none';
 }
 function cycleDebugState() {
-  /* server-side state, so this is now a client-only preview — log it */
-  if (!net.scp) return;
-  const states = ['IDLE', 'PANIC', 'CHASE', 'ATTACK'];
-  const cur = states.indexOf(net.scp.state);
-  const next = states[(cur + 1) % states.length];
-  console.log(`[debug] server-side state is "${net.scp.state}". Cycle is client-only — server would need a debug endpoint.`);
+  if (!net.scpState) return;
+  console.log(`[debug] server-side state is "${net.scpState.state}". Cycle is client-only.`);
 }
 
 window.addEventListener('keydown', (e) => {
@@ -839,7 +817,6 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyQ')      { e.preventDefault(); if (!e.repeat) toggleHighlight(); return; }
   if (e.code === 'KeyE')      { e.preventDefault(); if (!e.repeat) togglePath(); return; }
   if (e.code === 'KeyP')      { e.preventDefault(); if (!e.repeat) window.__togglePostFX(); return; }
-  if (e.code === 'KeyH')      { e.preventDefault(); if (!e.repeat) {} return; }
   if (e.code === 'KeyB')      { e.preventDefault(); if (!e.repeat) toggleDebugMode(); return; }
   if (e.code === 'KeyF')      { e.preventDefault(); if (!e.repeat && debugMode) cycleDebugState(); return; }
 
@@ -854,11 +831,8 @@ canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 canvas.addEventListener('mousedown', (e) => {
   if (!hasStarted) return;
   if (e.button === 0 && !jumpscare.active) {
-    /* fire locally for feel + tell server */
-    const dir = new THREE.Vector3();
-    camera.getWorldDirection(dir);
-    const o = camera.position.clone().add(dir.clone().multiplyScalar(1.2));
-    net.sendFire(o.x, o.y, o.z, dir.x, dir.y, dir.z);
+    /* local shot for feedback */
+    bazooka.fire();
   }
   if (e.button === 2) { rightDragging = true; lastX = e.clientX; lastY = e.clientY; }
 });
@@ -900,7 +874,7 @@ window.addEventListener('wheel', (e) => {
 }, { passive: false });
 
 /* ================================================================== *
- *  HIGHLIGHT / PATH (same idea as before)
+ *  HIGHLIGHT / PATH
  * ================================================================== */
 let highlightActive = false, highlightMarker = null;
 function makeHighlightMarker() {
@@ -1042,7 +1016,7 @@ function evaluateFps(now) {
 }
 
 /* ================================================================== *
- *  JUMPSCARE (client-side camera effect)
+ *  JUMPSCARE
  * ================================================================== */
 const jumpscare = { active: false };
 function startJumpscare() {
@@ -1054,13 +1028,13 @@ function startJumpscare() {
 function endJumpscare() { jumpscare.active = false; }
 
 /* ================================================================== *
- *  STATE UPLOAD (throttled)
+ *  STATE UPLOAD
  * ================================================================== */
 let lastUpload = 0;
 function uploadState(dt) {
   if (!hasStarted || !net.isConnected()) return;
   lastUpload += dt;
-  if (lastUpload < 0.05) return;   // 20 Hz
+  if (lastUpload < 0.05) return;
   lastUpload = 0;
   const vel = Math.hypot(player.vel.x, player.vel.z);
   const running = !!(keys['ShiftLeft'] || keys['ShiftRight']);
@@ -1160,12 +1134,10 @@ function update(dt) {
     playerModel.update(dt);
   }
 
-  /* remote players */
   for (const [id, r] of remotePlayers) {
     const remote = net.players.get(id);
     if (!remote) continue;
 
-    /* interpolate */
     const t = Math.min(1, dt * 12);
     r._smoothedX += (remote.x - r._smoothedX) * t;
     r._smoothedZ += (remote.z - r._smoothedZ) * t;
@@ -1177,13 +1149,12 @@ function update(dt) {
     r.model.setMotion(speed, running);
     r.model.update(dt);
 
-    /* nametag position */
     r.sprite.position.set(r._smoothedX, 3.1, r._smoothedZ);
   }
 
   /* SCP render from server */
-  if (scpRenderer && net.scp) {
-    scpRenderer.applyServerState(net.scp);
+  if (scpRenderer && net.scpPos) {
+    scpRenderer.setPosition(net.scpPos);
     scpRenderer.update(dt);
   }
 
@@ -1195,8 +1166,8 @@ function update(dt) {
   if (pathActive) updatePathLine();
 
   /* achievement */
-  if (net.scp) {
-    const chasingMe = net.scp.state === 'CHASE' && net.scp.targetId === net.id && !jumpscare.active;
+  if (net.scpState) {
+    const chasingMe = net.scpState.state === 'CHASE' && net.scpState.targetId === net.id && !jumpscare.active;
     if (chasingMe) {
       if (!isHunted) { isHunted = true; huntTime = 0; }
       huntTime += dt;
@@ -1204,7 +1175,7 @@ function update(dt) {
         survivorAchieved = true;
         showAchievement(t('achName'), t('achDesc'));
       }
-    } else if (isHunted && net.scp.state !== 'PANIC') {
+    } else if (isHunted && net.scpState.state !== 'PANIC') {
       isHunted = false; huntTime = 0;
     }
   }
@@ -1220,8 +1191,8 @@ function updatePreview(dt) {
 
 function updateDebugHud() {
   if (!debugMode) return;
-  if (net.scp) {
-    debugStateEl.textContent = net.scp.state;
+  if (net.scpState) {
+    debugStateEl.textContent = net.scpState.state + (net.scpState.substate ? `/${net.scpState.substate}` : '');
     debugCountEl.textContent = remotePlayers.size + (hasStarted ? 1 : 0);
   } else {
     debugStateEl.textContent = '--';

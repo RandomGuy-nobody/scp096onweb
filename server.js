@@ -8,7 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
 
 /* ================================================================== *
- *  STATIC FILE SERVER
+ *  STATIC
  * ================================================================== */
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -30,15 +30,10 @@ const MIME = {
 function serveStatic(req, res) {
   let urlPath = decodeURIComponent(req.url.split('?')[0]);
   if (urlPath === '/') urlPath = '/index.html';
-
   const filePath = path.join(__dirname, urlPath);
-  if (!filePath.startsWith(__dirname)) {
-    res.writeHead(403); res.end(); return;
-  }
+  if (!filePath.startsWith(__dirname)) { res.writeHead(403); res.end(); return; }
   fs.stat(filePath, (err, stat) => {
-    if (err || !stat.isFile()) {
-      res.writeHead(404); res.end('Not found'); return;
-    }
+    if (err || !stat.isFile()) { res.writeHead(404); res.end('Not found'); return; }
     const ext = path.extname(filePath).toLowerCase();
     res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
     fs.createReadStream(filePath).pipe(res);
@@ -48,7 +43,7 @@ function serveStatic(req, res) {
 const server = http.createServer(serveStatic);
 
 /* ================================================================== *
- *  MAZE (server generates once, all clients use the same one)
+ *  MAZE
  * ================================================================== */
 const COLS = 16, ROWS = 16, CELL = 4, SPAWN_CHAMBER = 7;
 const SCP_CLEARANCE_RADIUS = 1;
@@ -111,12 +106,7 @@ function generateMaze() {
       if (gx > 0 && gx < W - 1 && gy > 0 && gy < H - 1) grid[idx(gx, gy)] = 0;
     }
 
-  return {
-    grid: Array.from(grid),
-    W, H,
-    SPAWN_GX, SPAWN_GY,
-    scpCell,
-  };
+  return { grid: Array.from(grid), W, H, SPAWN_GX, SPAWN_GY, scpCell };
 }
 
 const maze = generateMaze();
@@ -125,46 +115,58 @@ const originZ = -(maze.H * CELL) / 2;
 const cellToWorldX = gx => originX + gx * CELL + CELL / 2;
 const cellToWorldZ = gy => originZ + gy * CELL + CELL / 2;
 
-console.log(`[server] maze ${maze.W}x${maze.H} — player spawn (${maze.SPAWN_GX},${maze.SPAWN_GY}) — SCP (${maze.scpCell.gx},${maze.scpCell.gy})`);
+console.log(`[server] maze ${maze.W}x${maze.H} — spawn (${maze.SPAWN_GX},${maze.SPAWN_GY}) — SCP (${maze.scpCell.gx},${maze.scpCell.gy})`);
 
 /* ================================================================== *
  *  GAME STATE
  * ================================================================== */
-const players = new Map();          // id -> player
-const usernameIndex = new Map();    // lowercase -> id
+const players = new Map();
+const usernameIndex = new Map();
 let nextId = 1;
+
+/* ---- AI timing constants (clip durations from the model dump) ---- */
+const RAGE_DURATION        = 28.0;   // ← total PANIC state
+const CHASE_SPEED          = 23;
+const ATTACK_RANGE         = 7.0;
+const ATTACK_EXIT_RANGE    = 10.5;
+const KILL_RANGE           = 1.7;
+const ATTACKRUNSTART_DUR   = 1.208;
+const ATTACK_JUMP_DUR      = 1.042;
+const ATTACK_KILL_AT       = 1.5;    // seconds INTO the attack clip when target dies
+const ATTACK_TOTAL         = ATTACK_JUMP_DUR + 6.875;   // attackjump + attack full
 
 const scp = {
   x: cellToWorldX(maze.scpCell.gx),
   z: cellToWorldZ(maze.scpCell.gy),
   yaw: 0,
-  state: 'IDLE',
+  state: 'IDLE',              // IDLE | PANIC | CHASE | ATTACK
+  substate: null,             // CHASE: 'running'|'attackrunstart'|'attackrun'|'attackrunstart_reverse'
+                              // ATTACK: 'attackjump'|'attack'
   stateTime: 0,
-  currentAnim: 'sit',
   targetId: null,
   threatList: [],
   stunned: false,
   stunTimer: 0,
+  killFired: false,
+  chaseTimer: 0,
 };
 
 function publicPlayer(p) {
   return {
-    id: p.id,
-    username: p.username,
-    model: p.model,
-    x: p.x, z: p.z,
-    yaw: p.yaw, pitch: p.pitch,
+    id: p.id, username: p.username, model: p.model,
+    x: p.x, z: p.z, yaw: p.yaw, pitch: p.pitch,
     vel: p.vel, running: p.running,
   };
 }
-function publicScp() {
+function publicScpPos() {
+  return { x: scp.x, z: scp.z, yaw: scp.yaw, stunned: scp.stunned };
+}
+function publicScpState() {
   return {
-    x: scp.x, z: scp.z, yaw: scp.yaw,
     state: scp.state,
-    currentAnim: scp.currentAnim,
+    substate: scp.substate,
     targetId: scp.targetId,
-    threatList: scp.threatList,
-    stunned: scp.stunned,
+    threatList: scp.threatList.slice(),
   };
 }
 
@@ -179,15 +181,13 @@ function sendTo(id, msg) {
   const p = players.get(id);
   if (p && p.ws && p.ws.readyState === 1) p.ws.send(JSON.stringify(msg));
 }
+function broadcastScpState() {
+  broadcast({ type: 'scp_state', scp: publicScpState() });
+}
 
 /* ================================================================== *
- *  SCP AI
+ *  BFS
  * ================================================================== */
-const SCP_SPEED = 12;
-const KILL_RANGE = 1.7;
-const ATTACK_RANGE = 7;
-const PANIC_DURATION = 10;
-
 let scpPath = null, scpPathIdx = 0, repathTimer = 0;
 
 function worldToCell(x, z) {
@@ -196,22 +196,17 @@ function worldToCell(x, z) {
     gy: Math.max(0, Math.min(maze.H - 1, Math.floor((z - originZ) / CELL))),
   };
 }
-function cellCenter(gx, gy) {
-  return { x: cellToWorldX(gx), z: cellToWorldZ(gy) };
-}
-
 function bfsPath(sx, sy, gx, gy) {
   const W = maze.W, H = maze.H;
   const sIdx = sy * W + sx, gIdx = gy * W + gx;
   if (sIdx === gIdx || maze.grid[sIdx] === 1 || maze.grid[gIdx] === 1) return null;
-
   const visited = new Int32Array(W * H).fill(-1);
   const prev    = new Int32Array(W * H).fill(-1);
   visited[sIdx] = 0;
   const q = [sIdx];
   let found = false;
-  for (let head = 0; head < q.length; head++) {
-    const c = q[head];
+  for (let h = 0; h < q.length; h++) {
+    const c = q[h];
     if (c === gIdx) { found = true; break; }
     const cx = c % W, cy = (c / W) | 0;
     for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
@@ -229,12 +224,17 @@ function bfsPath(sx, sy, gx, gy) {
   let c = gIdx;
   while (c !== -1 && c !== sIdx) { cells.push(c); c = prev[c]; }
   cells.reverse();
-  return cells.map(idx => cellCenter(idx % W, (idx / W) | 0));
+  return cells.map(idx => ({
+    x: originX + (idx % W) * CELL + CELL / 2,
+    z: originZ + ((idx / W) | 0) * CELL + CELL / 2,
+  }));
 }
 
+/* ================================================================== *
+ *  PERCEPTION
+ * ================================================================== */
 function isPlayerLookingAtFace(p) {
-  const dx = scp.x - p.x;
-  const dz = scp.z - p.z;
+  const dx = scp.x - p.x, dz = scp.z - p.z;
   const dist = Math.hypot(dx, dz);
   if (dist > 42) return false;
   if (dist < 0.5) return true;
@@ -252,157 +252,202 @@ function isPlayerLookingAtFace(p) {
   return faceDot >= 0.25;
 }
 
+/* ================================================================== *
+ *  STATE MACHINE
+ * ================================================================== */
+function enterIdle() {
+  scp.state = 'IDLE';
+  scp.substate = null;
+  scp.stateTime = 0;
+  scp.targetId = null;
+  scp.killFired = false;
+  scp.chaseTimer = 0;
+  broadcastScpState();
+  console.log('[scp] → IDLE');
+}
+
+function enterPanic() {
+  scp.state = 'PANIC';
+  scp.substate = null;
+  scp.stateTime = 0;
+  broadcastScpState();
+  broadcast({ type: 'scp_event', event: 'rage_start' });
+  console.log(`[scp] → PANIC (rage for ${RAGE_DURATION}s) threatList=[${scp.threatList}]`);
+}
+
+function enterChase(targetId) {
+  scp.state = 'CHASE';
+  scp.substate = 'running';
+  scp.stateTime = 0;
+  scp.targetId = targetId;
+  scp.chaseTimer = 0;
+  scpPath = null;
+  scpPathIdx = 0;
+  repathTimer = 0;
+  broadcastScpState();
+  broadcast({ type: 'scp_event', event: 'chase_start', targetId });
+  console.log(`[scp] → CHASE → ${targetId}`);
+}
+
+function enterAttack() {
+  scp.state = 'ATTACK';
+  scp.substate = 'attackjump';
+  scp.stateTime = 0;
+  scp.killFired = false;
+  broadcastScpState();
+  broadcast({ type: 'scp_event', event: 'kill_start', playerId: scp.targetId });
+  console.log(`[scp] → ATTACK → ${scp.targetId}`);
+}
+
+/* ================================================================== *
+ *  TICK
+ * ================================================================== */
+function tickIdle(dt) {
+  for (const [id, p] of players) {
+    if (isPlayerLookingAtFace(p)) {
+      scp.threatList = [id];
+      enterPanic();
+      return;
+    }
+  }
+}
+
+function tickPanic(dt) {
+  if (scp.stateTime >= RAGE_DURATION) {
+    const next = scp.threatList[0];
+    if (next && players.has(next)) enterChase(next);
+    else enterIdle();
+  }
+}
+
+function tickChase(dt) {
+  /* new threats can be added any time during chase */
+  for (const [id, p] of players) {
+    if (id === scp.targetId) continue;
+    if (scp.threatList.includes(id)) continue;
+    if (isPlayerLookingAtFace(p)) {
+      scp.threatList.push(id);
+      broadcast({ type: 'scp_event', event: 'threat_added', playerId: id });
+      console.log(`[scp] threat added: ${id}`);
+    }
+  }
+
+  const tgt = players.get(scp.targetId);
+  if (!tgt) {
+    scp.threatList = scp.threatList.filter(id => id !== scp.targetId);
+    const next = scp.threatList[0];
+    if (next && players.has(next)) enterChase(next);
+    else enterIdle();
+    return;
+  }
+
+  const dx = tgt.x - scp.x, dz = tgt.z - scp.z;
+  const dist = Math.hypot(dx, dz);
+
+  /* --- attackrun substate transitions --- */
+  if (dist < ATTACK_RANGE &&
+      (scp.substate === 'running')) {
+    scp.substate = 'attackrunstart';
+    scp.chaseTimer = ATTACKRUNSTART_DUR;
+    broadcastScpState();
+  } else if (dist > ATTACK_EXIT_RANGE &&
+             (scp.substate === 'attackrunstart' || scp.substate === 'attackrun')) {
+    scp.substate = 'attackrunstart_reverse';
+    scp.chaseTimer = ATTACKRUNSTART_DUR;
+    broadcastScpState();
+  }
+
+  if (scp.chaseTimer > 0) {
+    scp.chaseTimer -= dt;
+    if (scp.chaseTimer <= 0) {
+      if (scp.substate === 'attackrunstart') {
+        scp.substate = 'attackrun';
+      } else if (scp.substate === 'attackrunstart_reverse') {
+        scp.substate = 'running';
+      }
+      broadcastScpState();
+    }
+  }
+
+  /* --- kill --- */
+  if (dist < KILL_RANGE) {
+    enterAttack();
+    return;
+  }
+
+  /* --- pathfind + move (keeps moving during attackrun!) --- */
+  repathTimer -= dt;
+  if (repathTimer <= 0 || !scpPath || scpPathIdx >= scpPath.length) {
+    const a = worldToCell(scp.x, scp.z);
+    const b = worldToCell(tgt.x, tgt.z);
+    scpPath = bfsPath(a.gx, a.gy, b.gx, b.gy);
+    scpPathIdx = 0;
+    repathTimer = 0.6;
+  }
+
+  if (scpPath && scpPathIdx < scpPath.length) {
+    const node = scpPath[scpPathIdx];
+    const ndx = node.x - scp.x, ndz = node.z - scp.z;
+    const nd = Math.hypot(ndx, ndz);
+    if (nd < 0.35) scpPathIdx++;
+    else {
+      scp.x += (ndx / nd) * CHASE_SPEED * dt;
+      scp.z += (ndz / nd) * CHASE_SPEED * dt;
+      scp.yaw = Math.atan2(ndx, ndz);
+    }
+  } else if (dist > 0.01) {
+    scp.x += (dx / dist) * CHASE_SPEED * dt;
+    scp.z += (dz / dist) * CHASE_SPEED * dt;
+    scp.yaw = Math.atan2(dx, dz);
+  }
+}
+
+function tickAttack(dt) {
+  if (scp.stateTime < ATTACK_JUMP_DUR) {
+    if (scp.substate !== 'attackjump') {
+      scp.substate = 'attackjump';
+      broadcastScpState();
+    }
+  } else {
+    if (scp.substate !== 'attack') {
+      scp.substate = 'attack';
+      broadcastScpState();
+    }
+    const attackElapsed = scp.stateTime - ATTACK_JUMP_DUR;
+    if (attackElapsed >= ATTACK_KILL_AT && !scp.killFired) {
+      scp.killFired = true;
+      sendTo(scp.targetId, {
+        type: 'killed',
+        x: cellToWorldX(maze.SPAWN_GX),
+        z: cellToWorldZ(maze.SPAWN_GY),
+      });
+      console.log(`[scp] kill landed on ${scp.targetId}`);
+    }
+  }
+
+  if (scp.stateTime >= ATTACK_TOTAL) {
+    scp.threatList = scp.threatList.filter(id => id !== scp.targetId);
+    const next = scp.threatList[0];
+    if (next && players.has(next)) enterChase(next);
+    else enterIdle();
+  }
+}
+
 function tickScp(dt) {
-  /* stun: no logic runs, only timer */
   if (scp.stunned) {
     scp.stunTimer -= dt;
     if (scp.stunTimer <= 0) {
       scp.stunned = false;
-      scp.currentAnim = scp.state === 'CHASE' ? 'running' : 'sit';
-      broadcast({ type: 'scp', scp: publicScp() });
+      broadcastScpState();
     }
     return;
   }
-
   scp.stateTime += dt;
-
   switch (scp.state) {
-    case 'IDLE': {
-      for (const [id, p] of players) {
-        if (isPlayerLookingAtFace(p)) {
-          scp.threatList = [id];
-          scp.state = 'PANIC';
-          scp.stateTime = 0;
-          scp.currentAnim = 'getup';
-          broadcast({ type: 'scp', scp: publicScp() });
-          broadcast({ type: 'scp_event', event: 'face_seen', playerId: id });
-          break;
-        }
-      }
-      break;
-    }
-
-    case 'PANIC': {
-      /* getup (~1.5s) → panicstart1 (~2s) → panic loop (PANIC_DURATION) */
-      if (scp.stateTime < 1.5) {
-        scp.currentAnim = 'getup';
-      } else if (scp.stateTime < 3.5) {
-        scp.currentAnim = 'panicstart1';
-      } else {
-        scp.currentAnim = 'panic';
-        if (scp.stateTime > PANIC_DURATION) {
-          scp.targetId = scp.threatList[0] || null;
-          if (!scp.targetId) {
-            scp.state = 'IDLE';
-            scp.stateTime = 0;
-            scp.currentAnim = 'sit';
-          } else {
-            scp.state = 'CHASE';
-            scp.stateTime = 0;
-            scp.currentAnim = 'running';
-            broadcast({ type: 'scp_event', event: 'chase_start', targetId: scp.targetId });
-          }
-          broadcast({ type: 'scp', scp: publicScp() });
-        }
-      }
-      break;
-    }
-
-    case 'CHASE': {
-      /* add new threats if anyone looks at face while SCP is chasing someone */
-      for (const [id, p] of players) {
-        if (id === scp.targetId) continue;
-        if (scp.threatList.includes(id)) continue;
-        if (isPlayerLookingAtFace(p)) {
-          scp.threatList.push(id);
-          broadcast({ type: 'scp_event', event: 'threat_added', playerId: id });
-        }
-      }
-
-      const tgt = players.get(scp.targetId);
-      if (!tgt) {
-        scp.threatList = scp.threatList.filter(id => id !== scp.targetId);
-        scp.targetId = scp.threatList[0] || null;
-        if (!scp.targetId) {
-          scp.state = 'IDLE';
-          scp.stateTime = 0;
-          scp.currentAnim = 'sit';
-          broadcast({ type: 'scp', scp: publicScp() });
-        } else {
-          broadcast({ type: 'scp_event', event: 'chase_start', targetId: scp.targetId });
-        }
-        break;
-      }
-
-      const dx = tgt.x - scp.x, dz = tgt.z - scp.z;
-      const dist = Math.hypot(dx, dz);
-
-      if (dist < KILL_RANGE) {
-        scp.state = 'ATTACK';
-        scp.stateTime = 0;
-        scp.currentAnim = 'attackjump';
-        broadcast({ type: 'scp', scp: publicScp() });
-        broadcast({ type: 'scp_event', event: 'kill_start', playerId: scp.targetId });
-        sendTo(scp.targetId, {
-          type: 'killed',
-          x: cellToWorldX(maze.SPAWN_GX),
-          z: cellToWorldZ(maze.SPAWN_GY),
-        });
-        break;
-      }
-
-      repathTimer -= dt;
-      if (repathTimer <= 0 || !scpPath || scpPathIdx >= scpPath.length) {
-        const a = worldToCell(scp.x, scp.z);
-        const b = worldToCell(tgt.x, tgt.z);
-        scpPath = bfsPath(a.gx, a.gy, b.gx, b.gy);
-        scpPathIdx = 0;
-        repathTimer = 0.6;
-      }
-
-      if (scpPath && scpPathIdx < scpPath.length) {
-        const node = scpPath[scpPathIdx];
-        const ndx = node.x - scp.x, ndz = node.z - scp.z;
-        const nd = Math.hypot(ndx, ndz);
-        if (nd < 0.35) scpPathIdx++;
-        else {
-          scp.x += (ndx / nd) * SCP_SPEED * dt;
-          scp.z += (ndz / nd) * SCP_SPEED * dt;
-          scp.yaw = Math.atan2(ndx, ndz);
-        }
-      } else if (dist > 0.01) {
-        scp.x += (dx / dist) * SCP_SPEED * dt;
-        scp.z += (dz / dist) * SCP_SPEED * dt;
-        scp.yaw = Math.atan2(dx, dz);
-      }
-
-      scp.currentAnim = dist < ATTACK_RANGE ? 'attackrun' : 'running';
-      break;
-    }
-
-    case 'ATTACK': {
-      if (scp.stateTime < 1.0) scp.currentAnim = 'attackjump';
-      else {
-        scp.currentAnim = 'attack';
-        if (scp.stateTime > 3.5) {
-          scp.threatList = scp.threatList.filter(id => id !== scp.targetId);
-          if (scp.threatList.length > 0) {
-            scp.targetId = scp.threatList[0];
-            scp.state = 'CHASE';
-            scp.stateTime = 0;
-            scp.currentAnim = 'running';
-            broadcast({ type: 'scp_event', event: 'chase_start', targetId: scp.targetId });
-          } else {
-            scp.targetId = null;
-            scp.state = 'IDLE';
-            scp.stateTime = 0;
-            scp.currentAnim = 'sit';
-          }
-          broadcast({ type: 'scp', scp: publicScp() });
-        }
-      }
-      break;
-    }
+    case 'IDLE':   tickIdle(dt);   break;
+    case 'PANIC':  tickPanic(dt);  break;
+    case 'CHASE':  tickChase(dt);  break;
+    case 'ATTACK': tickAttack(dt); break;
   }
 }
 
@@ -432,7 +477,6 @@ wss.on('connection', (ws) => {
         return sendToWs(ws, { type: 'error', msg: 'Username already taken' });
 
       const model = [1, 2].includes(msg.model) ? msg.model : 1;
-
       myId = nextId++;
       usernameIndex.set(lower, myId);
 
@@ -457,7 +501,8 @@ wss.on('connection', (ws) => {
         },
         spawn: { x: spawnX, z: spawnZ },
         players: [...players.values()].map(publicPlayer),
-        scp: publicScp(),
+        scpPos: publicScpPos(),
+        scpState: publicScpState(),
       });
 
       broadcast({ type: 'player_joined', player: publicPlayer(players.get(myId)) }, myId);
@@ -475,16 +520,6 @@ wss.on('connection', (ws) => {
       p.vel = msg.vel; p.running = msg.running;
       return;
     }
-
-    if (msg.type === 'fire') {
-      broadcast({
-        type: 'fire',
-        id: myId,
-        ox: msg.ox, oy: msg.oy, oz: msg.oz,
-        dx: msg.dx, dy: msg.dy, dz: msg.dz,
-      });
-      return;
-    }
   });
 
   ws.on('close', () => {
@@ -496,14 +531,10 @@ wss.on('connection', (ws) => {
 
     scp.threatList = scp.threatList.filter(id => id !== myId);
     if (scp.targetId === myId) {
-      scp.targetId = scp.threatList[0] || null;
-      if (!scp.targetId && scp.state === 'CHASE') {
-        scp.state = 'IDLE';
-        scp.stateTime = 0;
-        scp.currentAnim = 'sit';
-      }
+      const next = scp.threatList[0];
+      if (next && players.has(next)) enterChase(next);
+      else if (scp.state === 'CHASE' || scp.state === 'ATTACK') enterIdle();
     }
-
     broadcast({ type: 'player_left', id: myId });
     console.log(`[server] -${p.username} — ${players.size} online`);
   });
@@ -523,7 +554,7 @@ setInterval(() => {
   broadcast({
     type: 'state',
     players: [...players.values()].map(publicPlayer),
-    scp: publicScp(),
+    scpPos: publicScpPos(),
   });
 }, 1000 / 20);
 

@@ -15,13 +15,15 @@ const CLIP = {
   teslagatehit:  'scp096_skeleton|teslagatehit',
 };
 
-/* Which clips loop vs play-once */
-const LOOPING = new Set(['sit', 'sit2', 'panic', 'running', 'attackrun', 'teslagatehit']);
+const LOOPING = new Set([
+  'sit', 'sit2', 'panic', 'running', 'attackrun', 'teslagatehit',
+]);
 
 export class SCP096Renderer {
   constructor({ model, gltf, scene }) {
     this.model = model;
     this.gltf = gltf;
+    this.scene = scene;
 
     /* feet on floor */
     model.updateMatrixWorld(true);
@@ -36,63 +38,248 @@ export class SCP096Renderer {
 
     this.mixer = new THREE.AnimationMixer(model);
     this.actions = {};
+    this._finishCB = new Map();
     const byName = new Map(gltf.animations.map(c => [c.name, c]));
-    for (const [key, name] of Object.entries(CLIP)) {
-      const clip = byName.get(name);
-      if (!clip) { console.warn('[SCP] missing clip:', name); continue; }
-      this.actions[key] = this.mixer.clipAction(clip);
+    for (const [k, n] of Object.entries(CLIP)) {
+      const clip = byName.get(n);
+      if (!clip) { console.warn('[SCP] missing clip:', n); continue; }
+      this.actions[k] = this.mixer.clipAction(clip);
     }
+    this.mixer.addEventListener('finished', (e) => {
+      const cb = this._finishCB.get(e.action);
+      if (cb) { this._finishCB.delete(e.action); cb(); }
+    });
 
+    /* state */
+    this.state = null;
+    this.substate = null;
     this.currentAnim = null;
-    this._targetPos = new THREE.Vector3();
+    this.currentAction = null;
+
+    /* local IDLE cycle */
+    this.idlePhase = 'sit';
+    this.idleTimer = 0;
+
+    /* interpolation */
+    this._target = new THREE.Vector3();
     this._targetYaw = 0;
     this._posInit = false;
   }
 
-  /** Called every frame with the server-authoritative SCP state. */
-  applyServerState(scp) {
-    if (!scp) return;
-
-    this._targetPos.set(scp.x, 0, scp.z);
-    this._targetYaw = scp.yaw;
-
+  /* ============================================================== *
+   *  Called from main.js every frame with the current server pos
+   * ============================================================== */
+  setPosition(scpPos) {
+    if (!scpPos) return;
+    this._target.set(scpPos.x, 0, scpPos.z);
+    this._targetYaw = scpPos.yaw;
     if (!this._posInit) {
-      this.model.position.x = scp.x;
-      this.model.position.z = scp.z;
-      this.model.rotation.y = scp.yaw;
+      this.model.position.x = scpPos.x;
+      this.model.position.z = scpPos.z;
+      this.model.rotation.y = scpPos.yaw;
       this._posInit = true;
     }
+  }
 
-    if (scp.currentAnim !== this.currentAnim) {
-      this._play(scp.currentAnim);
-      this.currentAnim = scp.currentAnim;
+  /* ============================================================== *
+   *  State transitions (from server 'scp_state' event)
+   * ============================================================== */
+  setState(state, substate) {
+    const stateChanged = state !== this.state;
+    const substateChanged = substate !== this.substate;
+    this.state = state;
+    this.substate = substate;
+
+    if (!stateChanged && !substateChanged) return;
+
+    switch (state) {
+      case 'IDLE':
+        if (stateChanged) this._startIdleCycle();
+        break;
+
+      case 'PANIC':
+        if (stateChanged) this._startPanicSequence();
+        break;
+
+      case 'CHASE':
+        if (stateChanged) {
+          this._playLoop('running');
+          this.currentAnim = 'running';
+        } else {
+          this._handleChaseSubstate(substate);
+        }
+        break;
+
+      case 'ATTACK':
+        this._handleAttackSubstate(substate);
+        break;
     }
   }
 
-  _play(name) {
-    const action = this.actions[name];
-    if (!action) return;
+  /* ---- IDLE ---- */
+  _startIdleCycle() {
+    this.idlePhase = 'sit';
+    this.idleTimer = 15;
+    this._playLoop('sit');
+    this.currentAnim = 'sit';
+  }
+  _updateIdleCycle(dt) {
+    if (this.state !== 'IDLE') return;
+    this.idleTimer -= dt;
+    if (this.idleTimer > 0) return;
 
+    if (this.idlePhase === 'sit') {
+      this.idlePhase = 'sit2';
+      this.idleTimer = 15;
+      this._playOnce('sit2start', () => {
+        if (this.state === 'IDLE' && this.idlePhase === 'sit2') {
+          this._playLoop('sit2');
+          this.currentAnim = 'sit2';
+        }
+      });
+      this.currentAnim = 'sit2start';
+    } else {
+      this.idlePhase = 'sit';
+      this.idleTimer = 15;
+      this._playLoop('sit');
+      this.currentAnim = 'sit';
+    }
+  }
+
+  /* ---- PANIC ---- */
+  _startPanicSequence() {
+    this._playOnce('getup', () => {
+      this._playOnce('panicstart1', () => {
+        this._playLoop('panic');
+        this.currentAnim = 'panic';
+      });
+      this.currentAnim = 'panicstart1';
+    });
+    this.currentAnim = 'getup';
+  }
+
+  /* ---- CHASE ---- */
+  _handleChaseSubstate(substate) {
+    switch (substate) {
+      case 'running':
+        if (this.currentAnim !== 'running') {
+          this._playLoop('running');
+          this.currentAnim = 'running';
+        }
+        break;
+
+      case 'attackrunstart':
+        this._playOnce('attackrunstart', () => {
+          if (this.state === 'CHASE' && this.substate === 'attackrunstart') {
+            this._playLoop('attackrun');
+            this.currentAnim = 'attackrun';
+          }
+        });
+        this.currentAnim = 'attackrunstart';
+        break;
+
+      case 'attackrun':
+        if (this.currentAnim !== 'attackrun') {
+          this._playLoop('attackrun');
+          this.currentAnim = 'attackrun';
+        }
+        break;
+
+      case 'attackrunstart_reverse':
+        this._playReverse('attackrunstart', () => {
+          if (this.state === 'CHASE' && this.substate === 'attackrunstart_reverse') {
+            this._playLoop('running');
+            this.currentAnim = 'running';
+          }
+        });
+        this.currentAnim = 'attackrunstart_reverse';
+        break;
+    }
+  }
+
+  /* ---- ATTACK ---- */
+  _handleAttackSubstate(substate) {
+    if (substate === 'attackjump') {
+      if (this.currentAnim !== 'attackjump') {
+        this._playOnce('attackjump', null, 0.1);
+        this.currentAnim = 'attackjump';
+      }
+    } else if (substate === 'attack') {
+      if (this.currentAnim !== 'attack') {
+        this._playOnce('attack', null, 0.1);
+        this.currentAnim = 'attack';
+      }
+    }
+  }
+
+  /* ============================================================== *
+   *  Playback primitives
+   * ============================================================== */
+  _stopOthers(keepKey, fade) {
     for (const [k, a] of Object.entries(this.actions)) {
-      if (k === name) continue;
-      if (a.isRunning() || a.getEffectiveWeight() > 0.001) a.fadeOut(0.2);
+      if (k === keepKey) continue;
+      if (a.isRunning() || a.getEffectiveWeight() > 0.001) a.fadeOut(fade);
     }
-
-    action.reset();
-    if (LOOPING.has(name)) action.setLoop(THREE.LoopRepeat, Infinity);
-    else                    action.setLoop(THREE.LoopOnce, 1);
-    action.clampWhenFinished = true;
-    action.timeScale = 1;
-    action.paused = false;
-    action.fadeIn(0.2).play();
   }
 
+  _playLoop(name, fade = 0.2) {
+    const a = this.actions[name];
+    if (!a) return null;
+    this._stopOthers(name, fade);
+    a.reset();
+    a.setLoop(THREE.LoopRepeat, Infinity);
+    a.clampWhenFinished = false;
+    a.timeScale = 1;
+    a.paused = false;
+    a.fadeIn(fade).play();
+    this.currentAction = a;
+    return a;
+  }
+
+  _playOnce(name, onFinish, fade = 0.15) {
+    const a = this.actions[name];
+    if (!a) return null;
+    this._stopOthers(name, fade);
+    a.reset();
+    a.setLoop(THREE.LoopOnce, 1);
+    a.clampWhenFinished = true;
+    a.timeScale = 1;
+    a.paused = false;
+    a.fadeIn(fade).play();
+    if (onFinish) this._finishCB.set(a, onFinish);
+    this.currentAction = a;
+    return a;
+  }
+
+  _playReverse(name, onFinish, fade = 0.15) {
+    const a = this.actions[name];
+    if (!a) return null;
+    this._stopOthers(name, fade);
+    a.reset();
+    a.setLoop(THREE.LoopOnce, 1);
+    a.clampWhenFinished = true;
+    a.timeScale = -1;
+    a.paused = false;
+    a.time = a.getClip().duration;
+    a.fadeIn(fade).play();
+    if (onFinish) this._finishCB.set(a, onFinish);
+    this.currentAction = a;
+    return a;
+  }
+
+  /* ============================================================== *
+   *  Per-frame update
+   * ============================================================== */
   update(dt) {
     this.mixer.update(dt);
 
+    /* IDLE cycling — only in IDLE state */
+    this._updateIdleCycle(dt);
+
+    /* smooth position */
     const t = Math.min(1, dt * 15);
-    this.model.position.x += (this._targetPos.x - this.model.position.x) * t;
-    this.model.position.z += (this._targetPos.z - this.model.position.z) * t;
+    this.model.position.x += (this._target.x - this.model.position.x) * t;
+    this.model.position.z += (this._target.z - this.model.position.z) * t;
 
     let dy = this._targetYaw - this.model.rotation.y;
     while (dy >  Math.PI) dy -= Math.PI * 2;
