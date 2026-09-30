@@ -715,20 +715,34 @@ net.on('welcome', (msg) => {
   spawnLocalPlayerModel();
   for (const p of msg.players) spawnRemotePlayer(p);
 
-  /* load SCP */
+  /* Only load SCP once. If a previous SCP exists (reconnect, hot reload),
+     strip it from the scene before adding a new one. */
+  if (scpRenderer) {
+    console.warn('[SCP] renderer already exists — removing old model');
+    scene.remove(scpRenderer.model);
+    scpRenderer.model.traverse(o => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) o.material.dispose();
+    });
+    scpRenderer = null;
+  }
+
   loadSCP096(scene, new THREE.Vector3(0, 0, 0)).then((res) => {
     if (!res) return;
+    if (scpRenderer) {
+      /* race guard: another welcome slipped in while we were loading */
+      scene.remove(res.model);
+      return;
+    }
     scpRenderer = new SCP096Renderer({
       model: res.model,
       gltf: res.gltf,
       scene,
       sounds: soundManager,
     });
-    /* use the LATEST state, not the stale welcome snapshot —
-       the server may have transitioned to PANIC while the model was loading */
     if (net.scpPos)   scpRenderer.setPosition(net.scpPos);
     if (net.scpState) scpRenderer.setState(net.scpState.state, net.scpState.substate);
-    console.log('[SCP render] applied latest state:', net.scpState);
+    console.log('[SCP render] ready — applied state:', net.scpState);
   });
 
   canvas.requestPointerLock();
@@ -784,9 +798,12 @@ let scpRenderer = null;
 const bazookaWorld = { grid: null, W: 0, H: 0, CELL, originX: 0, originZ: 0 };
 const bazooka = new Bazooka({
   camera, scene,
-  getSCP: () => null,
+  getSCP: () => scpRenderer,          // ← live reference to the renderer
   world: bazookaWorld,
 });
+bazooka.onScpHit = () => {
+  if (net.isConnected()) net.ws.send(JSON.stringify({ type: 'stun_scp' }));
+};
 
 /* ================================================================== *
  *  INPUT

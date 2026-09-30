@@ -26,18 +26,18 @@ export class SCP096Renderer {
     this.scene = scene;
     this.sounds = sounds;
 
-    /* feet on floor */
+    /* ---- feet on the floor -------------------------------------- */
     model.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(model);
     model.position.y = -box.min.y;
     model.updateMatrixWorld(true);
 
-    /* red point light */
+    /* ---- red point light ---------------------------------------- */
     this.redLight = new THREE.PointLight(0xff1a1a, 3.2, 14, 1.8);
     this.redLight.position.set(0, 1.6, 0);
     model.add(this.redLight);
 
-    /* sounds anchored at head height */
+    /* ---- sounds anchored at head height ------------------------- */
     if (this.sounds) {
       this.soundAnchor = new THREE.Object3D();
       this.soundAnchor.position.set(0, 2.2, 0);
@@ -48,7 +48,7 @@ export class SCP096Renderer {
       this.sounds.attach('runScream', this.soundAnchor);
     }
 
-    /* animations */
+    /* ---- animations -------------------------------------------- */
     this.mixer = new THREE.AnimationMixer(model);
     this.actions = {};
     this._finishCB = new Map();
@@ -63,26 +63,42 @@ export class SCP096Renderer {
       if (cb) { this._finishCB.delete(e.action); cb(); }
     });
 
+    /* ---- bones for hit testing ---------------------------------- */
+    this.bones = [];
+    model.traverse(o => { if (o.isBone) this.bones.push(o); });
+    console.log(`[SCP render] indexed ${this.bones.length} bones for hit tests`);
+
+    /* ---- scratch ------------------------------------------------ */
+    this._hitVec = new THREE.Vector3();
+    this._tmpPt  = new THREE.Vector3();
+    this._hitBox = new THREE.Box3();
+
+    /* ---- state -------------------------------------------------- */
     this.state = null;
     this.substate = null;
     this.currentAnim = null;
     this.currentAction = null;
+    this._stunned = false;
 
+    /* local IDLE cycle */
     this.idlePhase = 'sit';
     this.idleTimer = 0;
 
+    /* interpolation */
     this._target = new THREE.Vector3();
     this._targetYaw = 0;
     this._posInit = false;
   }
 
-  /* ---- sounds ---- */
+  /* ============================================================== *
+   *  SOUND HELPERS
+   * ============================================================== */
   _sound(n)  { if (this.sounds) this.sounds.play(n); }
   _stop(n)   { if (this.sounds) this.sounds.stop(n); }
   _stopAll() { if (this.sounds) this.sounds.stopAll(); }
 
   /* ============================================================== *
-   *  Position (from server state tick)
+   *  POSITION (from server state tick)
    * ============================================================== */
   setPosition(scpPos) {
     if (!scpPos) return;
@@ -97,18 +113,80 @@ export class SCP096Renderer {
   }
 
   /* ============================================================== *
-   *  State
+   *  HIT TESTING (client-side, used by the bazooka)
+   * ============================================================== */
+  hitTestPoint(x, y, z, extraRadius = 0) {
+    if (!this.model) return false;
+    if (this.bones && this.bones.length) {
+      const r = 0.55 + extraRadius;
+      const r2 = r * r;
+      const v = this._hitVec;
+      for (const b of this.bones) {
+        b.getWorldPosition(v);
+        const dx = x - v.x, dy = y - v.y, dz = z - v.z;
+        if (dx * dx + dy * dy + dz * dz <= r2) return true;
+      }
+    }
+    if (this._hitBox) {
+      if (this._hitBox.containsPoint(this._tmpPt.set(x, y, z))) return true;
+    }
+    return false;
+  }
+
+  hitTestSegment(x1, y1, z1, x2, y2, z2, extraRadius = 0) {
+    if (!this.model) return false;
+    this.model.updateMatrixWorld(true);
+
+    /* rebuild bbox once per query */
+    if (this.bones && this.bones.length) {
+      this._hitBox.makeEmpty();
+      const v = this._hitVec;
+      for (const b of this.bones) {
+        b.getWorldPosition(v);
+        this._hitBox.expandByPoint(v);
+      }
+      this._hitBox.expandByScalar(0.45);
+    }
+
+    const dx = x2 - x1, dy = y2 - y1, dz = z2 - z1;
+    const len = Math.hypot(dx, dy, dz);
+    const r = 0.55 + extraRadius;
+    const steps = Math.max(2, Math.ceil(len / (r * 0.5)));
+    for (let s = 1; s <= steps; s++) {
+      const t = s / steps;
+      if (this.hitTestPoint(x1 + dx * t, y1 + dy * t, z1 + dz * t, extraRadius))
+        return true;
+    }
+    return false;
+  }
+
+  isStunned() { return this._stunned === true; }
+
+  /* ============================================================== *
+   *  STATE (from server)
    * ============================================================== */
   setState(state, substate) {
     const stateChanged    = state !== this.state;
     const substateChanged = substate !== this.substate;
     this.state = state;
     this.substate = substate;
+
+    /* track stunned flag for hit test filtering */
+    this._stunned = (state === 'STUNNED');
+
     if (!stateChanged && !substateChanged) return;
 
     console.log(`[SCP render] state ${state}${substate ? '/' + substate : ''}`);
 
     switch (state) {
+      case 'STUNNED':
+        if (stateChanged) {
+          this._stopAll();
+          this._playOnce('teslagatehit', null, 0.1);
+          this.currentAnim = 'teslagatehit';
+        }
+        break;
+
       case 'IDLE':
         if (stateChanged) {
           this._stopAll();
@@ -128,7 +206,7 @@ export class SCP096Renderer {
 
       case 'CHASE':
         if (stateChanged) {
-          /* leave rage running — it plays out its tail */
+          /* leave rage sound playing through its tail */
           this._sound('hush');
           this._sound('runScream');
           this._playLoop('running');
@@ -150,13 +228,14 @@ export class SCP096Renderer {
     }
   }
 
-  /* ---- IDLE ---- */
+  /* ---- IDLE cycle ---- */
   _startIdleCycle() {
     this.idlePhase = 'sit';
     this.idleTimer = 15;
     this._playLoop('sit');
     this.currentAnim = 'sit';
   }
+
   _updateIdleCycle(dt) {
     if (this.state !== 'IDLE') return;
     this.idleTimer -= dt;
@@ -180,7 +259,7 @@ export class SCP096Renderer {
     }
   }
 
-  /* ---- PANIC ---- */
+  /* ---- PANIC chain ---- */
   _startPanicSequence() {
     this._playOnce('getup', () => {
       this._playOnce('panicstart1', () => {
@@ -192,7 +271,7 @@ export class SCP096Renderer {
     this.currentAnim = 'getup';
   }
 
-  /* ---- CHASE ---- */
+  /* ---- CHASE substates ---- */
   _handleChaseSubstate(substate) {
     switch (substate) {
       case 'running':
@@ -231,7 +310,7 @@ export class SCP096Renderer {
     }
   }
 
-  /* ---- ATTACK ---- */
+  /* ---- ATTACK substates ---- */
   _handleAttackSubstate(substate) {
     if (substate === 'attackjump') {
       if (this.currentAnim !== 'attackjump') {
@@ -247,7 +326,7 @@ export class SCP096Renderer {
   }
 
   /* ============================================================== *
-   *  Playback
+   *  PLAYBACK PRIMITIVES
    * ============================================================== */
   _stopOthers(keepKey, fade) {
     for (const [k, a] of Object.entries(this.actions)) {
@@ -263,7 +342,8 @@ export class SCP096Renderer {
     a.reset();
     a.setLoop(THREE.LoopRepeat, Infinity);
     a.clampWhenFinished = false;
-    a.timeScale = 1; a.paused = false;
+    a.timeScale = 1;
+    a.paused = false;
     a.fadeIn(fade).play();
     this.currentAction = a;
     return a;
@@ -276,7 +356,8 @@ export class SCP096Renderer {
     a.reset();
     a.setLoop(THREE.LoopOnce, 1);
     a.clampWhenFinished = true;
-    a.timeScale = 1; a.paused = false;
+    a.timeScale = 1;
+    a.paused = false;
     a.fadeIn(fade).play();
     if (onFinish) this._finishCB.set(a, onFinish);
     this.currentAction = a;
@@ -290,7 +371,8 @@ export class SCP096Renderer {
     a.reset();
     a.setLoop(THREE.LoopOnce, 1);
     a.clampWhenFinished = true;
-    a.timeScale = -1; a.paused = false;
+    a.timeScale = -1;
+    a.paused = false;
     a.time = a.getClip().duration;
     a.fadeIn(fade).play();
     if (onFinish) this._finishCB.set(a, onFinish);
@@ -299,12 +381,13 @@ export class SCP096Renderer {
   }
 
   /* ============================================================== *
-   *  Frame update
+   *  FRAME UPDATE
    * ============================================================== */
   update(dt) {
     this.mixer.update(dt);
     this._updateIdleCycle(dt);
 
+    /* smooth position */
     const t = Math.min(1, dt * 15);
     this.model.position.x += (this._target.x - this.model.position.x) * t;
     this.model.position.z += (this._target.z - this.model.position.z) * t;

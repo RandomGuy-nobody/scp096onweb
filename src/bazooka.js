@@ -263,10 +263,10 @@ export class Bazooka {
       p.mesh.position.set(nx, ny, nz);
 
       const scp = this.getSCP();
-      if (scp && scp.hitTestSegment && !scp.isStunned?.()) {
+      if (scp && scp.hitTestSegment && !scp.isStunned()) {
         if (scp.hitTestSegment(prevX, prevY, prevZ, nx, ny, nz, PROJECTILE_R)) {
-          const did = scp.stun?.() ?? false;
-          if (DEBUG) console.log(`[Bazooka] SCP hit → stun() = ${did}`);
+          console.log('[Bazooka] SCP hit → requesting stun from server');
+          if (this.onScpHit) this.onScpHit();
           this._explode(p.mesh.position, true);
           this._remove(i);
         }
