@@ -47,11 +47,12 @@ const STRINGS = {
     errConn: 'Connection failed',
     dragRotate: n => `Survivor ${n} — drag to rotate`,
     notLoaded: n => `Model ${n} not loaded`,
-    controls: 'WASD — move · Shift — run · Click — fire · Q — highlight · E — path · Ctrl — lock · P — post-fx · L — language',
+    controls: 'WASD — move · Shift — run · Click — fire · Enter — chat · Q — highlight · E — path · Ctrl — lock · P — post-fx · L — language',
     achUnlocked: 'Achievement unlocked',
     achName: 'Survivor',
     achDesc: 'Survived an active chase for 30 seconds',
     langLabel: 'PT',
+    chatPlaceholder: 'Type your message and press Enter…',
   },
   pt: {
     title: 'Labirinto',
@@ -70,11 +71,12 @@ const STRINGS = {
     errConn: 'Falha na conexão',
     dragRotate: n => `Sobrevivente ${n} — arraste para girar`,
     notLoaded: n => `Modelo ${n} não carregado`,
-    controls: 'WASD — mover · Shift — correr · Clique — atirar · Q — destacar · E — caminho · Ctrl — travar · P — pós-fx · L — idioma',
+    controls: 'WASD — mover · Shift — correr · Clique — atirar · Enter — chat · Q — destacar · E — caminho · Ctrl — travar · P — pós-fx · L — idioma',
     achUnlocked: 'Conquista desbloqueada',
     achName: 'Sobrevivente',
     achDesc: 'Sobreviveu a uma perseguição ativa por 30 segundos',
     langLabel: 'EN',
+    chatPlaceholder: 'Digite sua mensagem e pressione Enter…',
   },
 };
 
@@ -274,7 +276,6 @@ function buildWorld() {
   SPAWN_GX = maze.SPAWN_GX;
   SPAWN_GY = maze.SPAWN_GY;
 
-  /* hand the world to the bazooka so wall detection works */
   bazookaWorld.grid = grid;
   bazookaWorld.W = W;
   bazookaWorld.H = H;
@@ -444,11 +445,14 @@ const debugStateEl  = document.getElementById('debug-state');
 const debugCountEl  = document.getElementById('debug-count');
 const usernameInput = document.getElementById('username');
 const errorMsgEl    = document.getElementById('error-msg');
+const chatLogEl     = document.getElementById('chat-log');
+const chatInput     = document.getElementById('chat-input');
 
 let hasStarted = false;
 let manualLock = false;
 let menuState = 'loading';
 let netReady  = false;
+let chatOpen  = false;
 
 const preview = makePreviewScene(previewCanvas);
 let selectedModelIdx = 1;
@@ -475,6 +479,7 @@ function applyLanguage() {
   menuSubEl.textContent   = t('subtitle');
   menuKeysEl.textContent  = t('controls');
   usernameInput.placeholder = t('usernamePlaceholder');
+  chatInput.placeholder     = t('chatPlaceholder');
 
   document.querySelector('.card[data-model="1"] .card-title').textContent = t('card1Title');
   document.querySelector('.card[data-model="1"] .card-sub').textContent   = t('card1Sub');
@@ -497,6 +502,75 @@ function setLanguage(l) { lang = l; applyLanguage(); }
 function toggleLanguage() { setLanguage(lang === 'en' ? 'pt' : 'en'); }
 langBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleLanguage(); });
 applyLanguage();
+
+/* ================================================================== *
+ *  CHAT
+ * ================================================================== */
+function isTypingInField() {
+  const el = document.activeElement;
+  return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+}
+
+function openChat() {
+  chatOpen = true;
+  chatInput.classList.add('visible');
+  chatInput.value = '';
+  chatInput.focus();
+  /* kill any held movement so the player stops while typing */
+  for (const k of ['KeyW','KeyA','KeyS','KeyD']) keys[k] = false;
+}
+
+function closeChat() {
+  chatOpen = false;
+  chatInput.classList.remove('visible');
+  chatInput.blur();
+}
+
+chatInput.addEventListener('keydown', (e) => {
+  if (e.code === 'Enter') {
+    e.preventDefault();
+    e.stopPropagation();
+    const text = chatInput.value;
+    if (text.trim()) net.sendChat(text);
+    closeChat();
+  } else if (e.code === 'Escape') {
+    e.preventDefault();
+    e.stopPropagation();
+    closeChat();
+  }
+});
+
+function addChatMessage(username, text) {
+  const line = document.createElement('div');
+  line.className = 'chat-line';
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'chat-name';
+  nameEl.textContent = username;
+
+  const textEl = document.createElement('span');
+  textEl.className = 'chat-text';
+  textEl.textContent = text;
+
+  line.appendChild(nameEl);
+  line.appendChild(document.createTextNode(': '));
+  line.appendChild(textEl);
+
+  chatLogEl.appendChild(line);
+
+  while (chatLogEl.children.length > 12) {
+    chatLogEl.removeChild(chatLogEl.firstChild);
+  }
+
+  setTimeout(() => line.classList.add('fading'), 12000);
+  setTimeout(() => {
+    if (line.parentNode === chatLogEl) chatLogEl.removeChild(line);
+  }, 13500);
+}
+
+net.on('chat', (msg) => {
+  addChatMessage(msg.from, msg.text);
+});
 
 /* ================================================================== *
  *  PREVIEW
@@ -618,7 +692,6 @@ function spawnLocalPlayerModel() {
   playerModel.syncTransform(player.pos, player.yaw);
 }
 
-/** Remote players: id -> { model, sprite, smoothing } */
 const remotePlayers = new Map();
 
 function spawnRemotePlayer(remote) {
@@ -715,8 +788,6 @@ net.on('welcome', (msg) => {
   spawnLocalPlayerModel();
   for (const p of msg.players) spawnRemotePlayer(p);
 
-  /* Only load SCP once. If a previous SCP exists (reconnect, hot reload),
-     strip it from the scene before adding a new one. */
   if (scpRenderer) {
     console.warn('[SCP] renderer already exists — removing old model');
     scene.remove(scpRenderer.model);
@@ -729,11 +800,7 @@ net.on('welcome', (msg) => {
 
   loadSCP096(scene, new THREE.Vector3(0, 0, 0)).then((res) => {
     if (!res) return;
-    if (scpRenderer) {
-      /* race guard: another welcome slipped in while we were loading */
-      scene.remove(res.model);
-      return;
-    }
+    if (scpRenderer) { scene.remove(res.model); return; }
     scpRenderer = new SCP096Renderer({
       model: res.model,
       gltf: res.gltf,
@@ -762,8 +829,6 @@ net.on('player_left', (id) => {
 
 net.on('scp_state', (s) => {
   if (scpRenderer) scpRenderer.setState(s.state, s.substate);
-
-  /* jumpscare: server says we're the target of an ATTACK */
   if (s.state === 'ATTACK' && s.targetId === net.id && !jumpscare.active) {
     startJumpscare();
   }
@@ -774,7 +839,6 @@ net.on('killed', (msg) => {
   player.vel.set(0, 0, 0);
   endJumpscare();
   if (!survivorAchieved) { huntTime = 0; isHunted = false; }
-  /* don't auto-lock — browsers require a user gesture. player clicks to re-lock */
   console.log('[game] killed — respawned (click to re-lock mouse)');
 });
 
@@ -798,7 +862,7 @@ let scpRenderer = null;
 const bazookaWorld = { grid: null, W: 0, H: 0, CELL, originX: 0, originZ: 0 };
 const bazooka = new Bazooka({
   camera, scene,
-  getSCP: () => scpRenderer,          // ← live reference to the renderer
+  getSCP: () => scpRenderer,
   world: bazookaWorld,
 });
 bazooka.onScpHit = () => {
@@ -823,11 +887,24 @@ function cycleDebugState() {
 }
 
 window.addEventListener('keydown', (e) => {
+  /* If the user is typing in ANY text field (username, chat), don't
+     process game keys. Let the field handle its own input. */
+  if (isTypingInField()) return;
+
+  /* Open chat with Enter or T */
+  if ((e.code === 'Enter' || e.code === 'KeyT') && hasStarted && !jumpscare.active) {
+    e.preventDefault();
+    if (!e.repeat) openChat();
+    return;
+  }
+
+  /* Language toggle — only when NOT typing (which we already checked) */
   if (e.code === 'KeyL') {
     e.preventDefault();
     if (!e.repeat) toggleLanguage();
     return;
   }
+
   if (!hasStarted) return;
 
   if (e.code === 'ControlLeft' || e.code === 'ControlRight') {
@@ -858,29 +935,16 @@ let rightDragging = false, lastX = 0, lastY = 0;
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 canvas.addEventListener('mousedown', (e) => {
   if (!hasStarted) return;
+  if (chatOpen) return;
   if (e.button === 0) {
     if (document.pointerLockElement !== canvas) {
-      /* re-acquire lock — first click after respawn/escape just grabs the mouse */
       canvas.requestPointerLock();
       return;
     }
     if (!jumpscare.active) bazooka.fire();
   }
   if (e.button === 2) { rightDragging = true; lastX = e.clientX; lastY = e.clientY; }
-});  loadSCP096(scene, new THREE.Vector3(0, 0, 0)).then((res) => {
-    if (!res) return;
-    scpRenderer = new SCP096Renderer({
-      model: res.model,
-      gltf: res.gltf,
-      scene,
-      sounds: soundManager,
-    });
-    /* use the LATEST state, not the stale welcome snapshot —
-       the server may have transitioned to PANIC while the model was loading */
-    if (net.scpPos)   scpRenderer.setPosition(net.scpPos);
-    if (net.scpState) scpRenderer.setState(net.scpState.state, net.scpState.substate);
-    console.log('[SCP render] applied latest state:', net.scpState);
-  });
+});
 window.addEventListener('mouseup', (e) => { if (e.button === 2) rightDragging = false; });
 
 function clampPitch() {
@@ -890,6 +954,7 @@ function clampPitch() {
 
 window.addEventListener('mousemove', (e) => {
   if (!hasStarted) return;
+  if (chatOpen) return;
   if (jumpscare.active) { lastX = e.clientX; lastY = e.clientY; return; }
   const locked = document.pointerLockElement === canvas;
   let dx, dy;
@@ -906,6 +971,7 @@ window.addEventListener('mousemove', (e) => {
 let zoomT = 0;
 window.addEventListener('wheel', (e) => {
   if (!hasStarted) return;
+  if (chatOpen) return;
   e.preventDefault();
   const wasFP = zoomT < FP_THRESHOLD;
   zoomT = Math.max(0, Math.min(1, zoomT + e.deltaY * 0.0012));
@@ -1142,7 +1208,8 @@ function updateCamera(dt) {
 }
 
 function update(dt) {
-  if (jumpscare.active || !hasStarted) {
+  /* movement freezes while typing or during the jumpscare */
+  if (jumpscare.active || !hasStarted || chatOpen) {
     player.vel.multiplyScalar(Math.exp(-DAMPING * dt));
   } else {
     tmpForward.set(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
@@ -1182,22 +1249,17 @@ function update(dt) {
   for (const [id, r] of remotePlayers) {
     const remote = net.players.get(id);
     if (!remote) continue;
-
     const t = Math.min(1, dt * 12);
     r._smoothedX += (remote.x - r._smoothedX) * t;
     r._smoothedZ += (remote.z - r._smoothedZ) * t;
-
     r.model.syncTransform(new THREE.Vector3(r._smoothedX, 0, r._smoothedZ), remote.yaw);
-
     const speed = remote.vel || 0;
     const running = !!remote.running;
     r.model.setMotion(speed, running);
     r.model.update(dt);
-
     r.sprite.position.set(r._smoothedX, 3.1, r._smoothedZ);
   }
 
-  /* SCP render from server */
   if (scpRenderer && net.scpPos) {
     scpRenderer.setPosition(net.scpPos);
     scpRenderer.update(dt);
@@ -1210,7 +1272,6 @@ function update(dt) {
 
   if (pathActive) updatePathLine();
 
-  /* achievement */
   if (net.scpState) {
     const chasingMe = net.scpState.state === 'CHASE' && net.scpState.targetId === net.id && !jumpscare.active;
     if (chasingMe) {
