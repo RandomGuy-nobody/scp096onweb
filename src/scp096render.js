@@ -20,10 +20,11 @@ const LOOPING = new Set([
 ]);
 
 export class SCP096Renderer {
-  constructor({ model, gltf, scene }) {
+  constructor({ model, gltf, scene, sounds }) {
     this.model = model;
     this.gltf = gltf;
     this.scene = scene;
+    this.sounds = sounds;
 
     /* feet on floor */
     model.updateMatrixWorld(true);
@@ -36,6 +37,18 @@ export class SCP096Renderer {
     this.redLight.position.set(0, 1.6, 0);
     model.add(this.redLight);
 
+    /* sounds anchored at head height */
+    if (this.sounds) {
+      this.soundAnchor = new THREE.Object3D();
+      this.soundAnchor.position.set(0, 2.2, 0);
+      model.add(this.soundAnchor);
+      this.sounds.attach('calm',      this.soundAnchor);
+      this.sounds.attach('faceSeen',  this.soundAnchor);
+      this.sounds.attach('rage',      this.soundAnchor);
+      this.sounds.attach('runScream', this.soundAnchor);
+    }
+
+    /* animations */
     this.mixer = new THREE.AnimationMixer(model);
     this.actions = {};
     this._finishCB = new Map();
@@ -50,24 +63,26 @@ export class SCP096Renderer {
       if (cb) { this._finishCB.delete(e.action); cb(); }
     });
 
-    /* state */
     this.state = null;
     this.substate = null;
     this.currentAnim = null;
     this.currentAction = null;
 
-    /* local IDLE cycle */
     this.idlePhase = 'sit';
     this.idleTimer = 0;
 
-    /* interpolation */
     this._target = new THREE.Vector3();
     this._targetYaw = 0;
     this._posInit = false;
   }
 
+  /* ---- sounds ---- */
+  _sound(n)  { if (this.sounds) this.sounds.play(n); }
+  _stop(n)   { if (this.sounds) this.sounds.stop(n); }
+  _stopAll() { if (this.sounds) this.sounds.stopAll(); }
+
   /* ============================================================== *
-   *  Called from main.js every frame with the current server pos
+   *  Position (from server state tick)
    * ============================================================== */
   setPosition(scpPos) {
     if (!scpPos) return;
@@ -82,27 +97,40 @@ export class SCP096Renderer {
   }
 
   /* ============================================================== *
-   *  State transitions (from server 'scp_state' event)
+   *  State
    * ============================================================== */
   setState(state, substate) {
-    const stateChanged = state !== this.state;
+    const stateChanged    = state !== this.state;
     const substateChanged = substate !== this.substate;
     this.state = state;
     this.substate = substate;
-
     if (!stateChanged && !substateChanged) return;
+
+    console.log(`[SCP render] state ${state}${substate ? '/' + substate : ''}`);
 
     switch (state) {
       case 'IDLE':
-        if (stateChanged) this._startIdleCycle();
+        if (stateChanged) {
+          this._stopAll();
+          this._sound('calm');
+          this._startIdleCycle();
+        }
         break;
 
       case 'PANIC':
-        if (stateChanged) this._startPanicSequence();
+        if (stateChanged) {
+          this._stop('calm');
+          this._sound('faceSeen');
+          this._sound('rage');
+          this._startPanicSequence();
+        }
         break;
 
       case 'CHASE':
         if (stateChanged) {
+          /* leave rage running — it plays out its tail */
+          this._sound('hush');
+          this._sound('runScream');
           this._playLoop('running');
           this.currentAnim = 'running';
         } else {
@@ -111,6 +139,12 @@ export class SCP096Renderer {
         break;
 
       case 'ATTACK':
+        if (stateChanged) {
+          this._stop('hush');
+          this._stop('runScream');
+          this._stop('rage');
+          this._sound('kill');
+        }
         this._handleAttackSubstate(substate);
         break;
     }
@@ -213,7 +247,7 @@ export class SCP096Renderer {
   }
 
   /* ============================================================== *
-   *  Playback primitives
+   *  Playback
    * ============================================================== */
   _stopOthers(keepKey, fade) {
     for (const [k, a] of Object.entries(this.actions)) {
@@ -229,8 +263,7 @@ export class SCP096Renderer {
     a.reset();
     a.setLoop(THREE.LoopRepeat, Infinity);
     a.clampWhenFinished = false;
-    a.timeScale = 1;
-    a.paused = false;
+    a.timeScale = 1; a.paused = false;
     a.fadeIn(fade).play();
     this.currentAction = a;
     return a;
@@ -243,8 +276,7 @@ export class SCP096Renderer {
     a.reset();
     a.setLoop(THREE.LoopOnce, 1);
     a.clampWhenFinished = true;
-    a.timeScale = 1;
-    a.paused = false;
+    a.timeScale = 1; a.paused = false;
     a.fadeIn(fade).play();
     if (onFinish) this._finishCB.set(a, onFinish);
     this.currentAction = a;
@@ -258,8 +290,7 @@ export class SCP096Renderer {
     a.reset();
     a.setLoop(THREE.LoopOnce, 1);
     a.clampWhenFinished = true;
-    a.timeScale = -1;
-    a.paused = false;
+    a.timeScale = -1; a.paused = false;
     a.time = a.getClip().duration;
     a.fadeIn(fade).play();
     if (onFinish) this._finishCB.set(a, onFinish);
@@ -268,15 +299,12 @@ export class SCP096Renderer {
   }
 
   /* ============================================================== *
-   *  Per-frame update
+   *  Frame update
    * ============================================================== */
   update(dt) {
     this.mixer.update(dt);
-
-    /* IDLE cycling — only in IDLE state */
     this._updateIdleCycle(dt);
 
-    /* smooth position */
     const t = Math.min(1, dt * 15);
     this.model.position.x += (this._target.x - this.model.position.x) * t;
     this.model.position.z += (this._target.z - this.model.position.z) * t;

@@ -714,6 +714,7 @@ net.on('welcome', (msg) => {
       model: res.model,
       gltf: res.gltf,
       scene,
+      sounds: soundManager,
     });
     if (msg.scpPos)   scpRenderer.setPosition(msg.scpPos);
     if (msg.scpState) scpRenderer.setState(msg.scpState.state, msg.scpState.substate);
@@ -748,10 +749,8 @@ net.on('killed', (msg) => {
   player.vel.set(0, 0, 0);
   endJumpscare();
   if (!survivorAchieved) { huntTime = 0; isHunted = false; }
-  if (zoomT < FP_THRESHOLD && document.pointerLockElement !== canvas) {
-    canvas.requestPointerLock();
-  }
-  console.log('[game] killed — respawned');
+  /* don't auto-lock — browsers require a user gesture. player clicks to re-lock */
+  console.log('[game] killed — respawned (click to re-lock mouse)');
 });
 
 net.on('scp_event', (msg) => {
@@ -830,9 +829,13 @@ let rightDragging = false, lastX = 0, lastY = 0;
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 canvas.addEventListener('mousedown', (e) => {
   if (!hasStarted) return;
-  if (e.button === 0 && !jumpscare.active) {
-    /* local shot for feedback */
-    bazooka.fire();
+  if (e.button === 0) {
+    if (document.pointerLockElement !== canvas) {
+      /* re-acquire lock — first click after respawn/escape just grabs the mouse */
+      canvas.requestPointerLock();
+      return;
+    }
+    if (!jumpscare.active) bazooka.fire();
   }
   if (e.button === 2) { rightDragging = true; lastX = e.clientX; lastY = e.clientY; }
 });

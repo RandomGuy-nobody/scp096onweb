@@ -118,30 +118,28 @@ const cellToWorldZ = gy => originZ + gy * CELL + CELL / 2;
 console.log(`[server] maze ${maze.W}x${maze.H} — spawn (${maze.SPAWN_GX},${maze.SPAWN_GY}) — SCP (${maze.scpCell.gx},${maze.scpCell.gy})`);
 
 /* ================================================================== *
- *  GAME STATE
+ *  STATE
  * ================================================================== */
 const players = new Map();
 const usernameIndex = new Map();
 let nextId = 1;
 
-/* ---- AI timing constants (clip durations from the model dump) ---- */
-const RAGE_DURATION        = 28.0;   // ← total PANIC state
+const RAGE_DURATION        = 28.0;
 const CHASE_SPEED          = 23;
 const ATTACK_RANGE         = 7.0;
 const ATTACK_EXIT_RANGE    = 10.5;
 const KILL_RANGE           = 1.7;
 const ATTACKRUNSTART_DUR   = 1.208;
 const ATTACK_JUMP_DUR      = 1.042;
-const ATTACK_KILL_AT       = 1.5;    // seconds INTO the attack clip when target dies
-const ATTACK_TOTAL         = ATTACK_JUMP_DUR + 6.875;   // attackjump + attack full
+const ATTACK_KILL_AT       = 1.5;
+const ATTACK_TOTAL         = ATTACK_JUMP_DUR + 6.875;
 
 const scp = {
   x: cellToWorldX(maze.scpCell.gx),
   z: cellToWorldZ(maze.scpCell.gy),
   yaw: 0,
-  state: 'IDLE',              // IDLE | PANIC | CHASE | ATTACK
-  substate: null,             // CHASE: 'running'|'attackrunstart'|'attackrun'|'attackrunstart_reverse'
-                              // ATTACK: 'attackjump'|'attack'
+  state: 'IDLE',
+  substate: null,
   stateTime: 0,
   targetId: null,
   threatList: [],
@@ -231,20 +229,32 @@ function bfsPath(sx, sy, gx, gy) {
 }
 
 /* ================================================================== *
- *  PERCEPTION
+ *  PERCEPTION — FIXED MATH
  * ================================================================== */
 function isPlayerLookingAtFace(p) {
-  const dx = scp.x - p.x, dz = scp.z - p.z;
-  const dist = Math.hypot(dx, dz);
+  /* eye at 2.4u, SCP face at roughly 2.0u */
+  const EYE_Y  = 2.4;
+  const FACE_Y = 2.0;
+
+  const dx = scp.x - p.x;
+  const dy = FACE_Y - EYE_Y;
+  const dz = scp.z - p.z;
+  const dist = Math.hypot(dx, dy, dz);
   if (dist > 42) return false;
   if (dist < 0.5) return true;
 
+  /* player's full 3D view direction, unit length */
   const cp = Math.cos(p.pitch || 0);
+  const sp = Math.sin(p.pitch || 0);
   const vx = -Math.sin(p.yaw) * cp;
+  const vy = sp;
   const vz = -Math.cos(p.yaw) * cp;
-  const ndx = dx / dist, ndz = dz / dist;
-  if (vx * ndx + vz * ndz < Math.cos(Math.PI / 4.5)) return false;
 
+  const ndx = dx / dist, ndy = dy / dist, ndz = dz / dist;
+  const dot = vx * ndx + vy * ndy + vz * ndz;
+  if (dot < Math.cos(Math.PI / 4.5)) return false;
+
+  /* SCP's own face direction must point at the player */
   const fdx = Math.sin(scp.yaw), fdz = Math.cos(scp.yaw);
   const toPX = p.x - scp.x, toPZ = p.z - scp.z;
   const toPLen = Math.hypot(toPX, toPZ) || 1e-6;
@@ -300,11 +310,12 @@ function enterAttack() {
 }
 
 /* ================================================================== *
- *  TICK
+ *  TICKS
  * ================================================================== */
 function tickIdle(dt) {
   for (const [id, p] of players) {
     if (isPlayerLookingAtFace(p)) {
+      console.log(`[scp] player ${id} (${p.username}) looked at face`);
       scp.threatList = [id];
       enterPanic();
       return;
@@ -321,14 +332,13 @@ function tickPanic(dt) {
 }
 
 function tickChase(dt) {
-  /* new threats can be added any time during chase */
   for (const [id, p] of players) {
     if (id === scp.targetId) continue;
     if (scp.threatList.includes(id)) continue;
     if (isPlayerLookingAtFace(p)) {
       scp.threatList.push(id);
       broadcast({ type: 'scp_event', event: 'threat_added', playerId: id });
-      console.log(`[scp] threat added: ${id}`);
+      console.log(`[scp] threat added: ${id} (${p.username})`);
     }
   }
 
@@ -344,9 +354,7 @@ function tickChase(dt) {
   const dx = tgt.x - scp.x, dz = tgt.z - scp.z;
   const dist = Math.hypot(dx, dz);
 
-  /* --- attackrun substate transitions --- */
-  if (dist < ATTACK_RANGE &&
-      (scp.substate === 'running')) {
+  if (dist < ATTACK_RANGE && scp.substate === 'running') {
     scp.substate = 'attackrunstart';
     scp.chaseTimer = ATTACKRUNSTART_DUR;
     broadcastScpState();
@@ -360,22 +368,14 @@ function tickChase(dt) {
   if (scp.chaseTimer > 0) {
     scp.chaseTimer -= dt;
     if (scp.chaseTimer <= 0) {
-      if (scp.substate === 'attackrunstart') {
-        scp.substate = 'attackrun';
-      } else if (scp.substate === 'attackrunstart_reverse') {
-        scp.substate = 'running';
-      }
+      if (scp.substate === 'attackrunstart') scp.substate = 'attackrun';
+      else if (scp.substate === 'attackrunstart_reverse') scp.substate = 'running';
       broadcastScpState();
     }
   }
 
-  /* --- kill --- */
-  if (dist < KILL_RANGE) {
-    enterAttack();
-    return;
-  }
+  if (dist < KILL_RANGE) { enterAttack(); return; }
 
-  /* --- pathfind + move (keeps moving during attackrun!) --- */
   repathTimer -= dt;
   if (repathTimer <= 0 || !scpPath || scpPathIdx >= scpPath.length) {
     const a = worldToCell(scp.x, scp.z);
@@ -416,12 +416,19 @@ function tickAttack(dt) {
     const attackElapsed = scp.stateTime - ATTACK_JUMP_DUR;
     if (attackElapsed >= ATTACK_KILL_AT && !scp.killFired) {
       scp.killFired = true;
-      sendTo(scp.targetId, {
-        type: 'killed',
-        x: cellToWorldX(maze.SPAWN_GX),
-        z: cellToWorldZ(maze.SPAWN_GY),
-      });
-      console.log(`[scp] kill landed on ${scp.targetId}`);
+      const tgt = players.get(scp.targetId);
+      if (tgt) {
+        /* teleport SERVER-side too, so SCP can't immediately re-kill */
+        tgt.x = cellToWorldX(maze.SPAWN_GX);
+        tgt.z = cellToWorldZ(maze.SPAWN_GY);
+        tgt.vel = 0;
+        sendTo(scp.targetId, {
+          type: 'killed',
+          x: tgt.x,
+          z: tgt.z,
+        });
+        console.log(`[scp] kill landed on ${scp.targetId} (${tgt.username})`);
+      }
     }
   }
 
