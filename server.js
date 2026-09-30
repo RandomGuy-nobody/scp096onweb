@@ -382,18 +382,43 @@ function tickChase(dt) {
     const b = worldToCell(tgt.x, tgt.z);
     scpPath = bfsPath(a.gx, a.gy, b.gx, b.gy);
     scpPathIdx = 0;
+    /* skip past any node that's already behind us */
+    if (scpPath) {
+      while (scpPathIdx < scpPath.length) {
+        const n = scpPath[scpPathIdx];
+        if (Math.hypot(n.x - scp.x, n.z - scp.z) > CELL * 1.5) break;
+        scpPathIdx++;
+      }
+    }
     repathTimer = 0.6;
   }
 
   if (scpPath && scpPathIdx < scpPath.length) {
-    const node = scpPath[scpPathIdx];
-    const ndx = node.x - scp.x, ndz = node.z - scp.z;
-    const nd = Math.hypot(ndx, ndz);
-    if (nd < 0.35) scpPathIdx++;
-    else {
-      scp.x += (ndx / nd) * CHASE_SPEED * dt;
-      scp.z += (ndz / nd) * CHASE_SPEED * dt;
-      scp.yaw = Math.atan2(ndx, ndz);
+    let budget = CHASE_SPEED * dt;
+
+    /* roll over node boundaries without freezing */
+    while (budget > 0 && scpPathIdx < scpPath.length) {
+      const node = scpPath[scpPathIdx];
+      const ndx = node.x - scp.x, ndz = node.z - scp.z;
+      const nd = Math.hypot(ndx, ndz);
+
+      if (nd < 0.001) {
+        scpPathIdx++;
+        continue;
+      }
+
+      if (nd <= budget) {
+        scp.x = node.x;
+        scp.z = node.z;
+        scp.yaw = Math.atan2(ndx, ndz);
+        budget -= nd;
+        scpPathIdx++;
+      } else {
+        scp.x += (ndx / nd) * budget;
+        scp.z += (ndz / nd) * budget;
+        scp.yaw = Math.atan2(ndx, ndz);
+        budget = 0;
+      }
     }
   } else if (dist > 0.01) {
     scp.x += (dx / dist) * CHASE_SPEED * dt;

@@ -274,11 +274,19 @@ function buildWorld() {
   SPAWN_GX = maze.SPAWN_GX;
   SPAWN_GY = maze.SPAWN_GY;
 
+  /* hand the world to the bazooka so wall detection works */
+  bazookaWorld.grid = grid;
+  bazookaWorld.W = W;
+  bazookaWorld.H = H;
+
   originX = -(W * CELL) / 2;
   originZ = -(H * CELL) / 2;
   cellToWorldX = gx => originX + gx * CELL + CELL / 2;
   cellToWorldZ = gy => originZ + gy * CELL + CELL / 2;
   spawnWorld = { x: cellToWorldX(SPAWN_GX), z: cellToWorldZ(SPAWN_GY) };
+
+  bazookaWorld.originX = originX;
+  bazookaWorld.originZ = originZ;
 
   const mazeExtent = Math.max(W, H) * CELL;
   const shadowExtent = mazeExtent * 0.62;
@@ -716,8 +724,11 @@ net.on('welcome', (msg) => {
       scene,
       sounds: soundManager,
     });
-    if (msg.scpPos)   scpRenderer.setPosition(msg.scpPos);
-    if (msg.scpState) scpRenderer.setState(msg.scpState.state, msg.scpState.substate);
+    /* use the LATEST state, not the stale welcome snapshot —
+       the server may have transitioned to PANIC while the model was loading */
+    if (net.scpPos)   scpRenderer.setPosition(net.scpPos);
+    if (net.scpState) scpRenderer.setState(net.scpState.state, net.scpState.substate);
+    console.log('[SCP render] applied latest state:', net.scpState);
   });
 
   canvas.requestPointerLock();
@@ -770,10 +781,11 @@ soundManager.loadAll('/sounds/');
 
 let scpRenderer = null;
 
+const bazookaWorld = { grid: null, W: 0, H: 0, CELL, originX: 0, originZ: 0 };
 const bazooka = new Bazooka({
   camera, scene,
-  getSCP: () => null,          // server-authoritative now; local bazooka is visual only
-  grid: [], W: 0, H: 0, CELL, originX: 0, originZ: 0,
+  getSCP: () => null,
+  world: bazookaWorld,
 });
 
 /* ================================================================== *
@@ -838,7 +850,20 @@ canvas.addEventListener('mousedown', (e) => {
     if (!jumpscare.active) bazooka.fire();
   }
   if (e.button === 2) { rightDragging = true; lastX = e.clientX; lastY = e.clientY; }
-});
+});  loadSCP096(scene, new THREE.Vector3(0, 0, 0)).then((res) => {
+    if (!res) return;
+    scpRenderer = new SCP096Renderer({
+      model: res.model,
+      gltf: res.gltf,
+      scene,
+      sounds: soundManager,
+    });
+    /* use the LATEST state, not the stale welcome snapshot —
+       the server may have transitioned to PANIC while the model was loading */
+    if (net.scpPos)   scpRenderer.setPosition(net.scpPos);
+    if (net.scpState) scpRenderer.setState(net.scpState.state, net.scpState.substate);
+    console.log('[SCP render] applied latest state:', net.scpState);
+  });
 window.addEventListener('mouseup', (e) => { if (e.button === 2) rightDragging = false; });
 
 function clampPitch() {
