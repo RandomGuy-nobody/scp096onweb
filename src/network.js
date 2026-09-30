@@ -5,10 +5,11 @@ export class NetworkClient {
     this.username = null;
     this.maze = null;
     this.spawn = null;
-    this.players = new Map();     // id -> remote player state
-    this.scp = null;
+    this.players = new Map();
+    this.scpPos = null;
+    this.scpState = null;
     this.handlers = {};
-    this.onState = null;          // set by main to receive every state tick
+    this.onState = null;
   }
 
   connect(url) {
@@ -36,37 +37,42 @@ export class NetworkClient {
         for (const p of msg.players) {
           if (p.id !== this.id) this.players.set(p.id, p);
         }
-        this.scp = msg.scp;
+        this.scpPos   = msg.scpPos   || null;
+        this.scpState = msg.scpState || null;
         this._emit('welcome', msg);
         break;
+
       case 'player_joined':
         if (msg.player.id !== this.id) this.players.set(msg.player.id, msg.player);
         this._emit('player_joined', msg.player);
         break;
+
       case 'player_left':
         this.players.delete(msg.id);
         this._emit('player_left', msg.id);
         break;
+
       case 'state':
         for (const p of msg.players) {
           if (p.id !== this.id) this.players.set(p.id, p);
         }
-        this.scp = msg.scp;
+        if (msg.scpPos) this.scpPos = msg.scpPos;
         if (this.onState) this.onState(msg);
         break;
-      case 'fire':
-        if (msg.id !== this.id) this._emit('fire', msg);
+
+      case 'scp_state':
+        this.scpState = msg.scp;
+        this._emit('scp_state', msg.scp);
         break;
-      case 'scp':
-        this.scp = msg.scp;
-        this._emit('scp', msg.scp);
-        break;
+
       case 'scp_event':
         this._emit('scp_event', msg);
         break;
+
       case 'killed':
         this._emit('killed', msg);
         break;
+
       case 'error':
         this._emit('error', msg);
         break;
