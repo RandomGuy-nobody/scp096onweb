@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Three.js Maze — Multiplayer</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #0b0f14; }
+      body {
+        font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        color: #eaf2ff;
+        -webkit-font-smoothing: antialiased;
+      }
+      canvas { display: block; }
+
+      #hud {
+        position: fixed; top: 12px; left: 14px;
+        display: flex; gap: 18px;
+        font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
+        opacity: .78; pointer-events: none;
+        text-shadow: 0 1px 4px rgba(0,0,0,.7);
+        z-index: 5;
+      }
+      #hud b { color: #ffe6a7; font-weight: 700; }
+
+      #crosshair {
+        position: fixed; top: 50%; left: 50%;
+        width: 6px; height: 6px; margin: -3px 0 0 -3px;
+        border-radius: 50%;
+        background: rgba(255,255,255,.85);
+        box-shadow: 0 0 0 1px rgba(0,0,0,.35);
+        pointer-events: none;
+        z-index: 6;
+      }
+
+      #debug-hud {
+        position: fixed; top: 12px; right: 14px;
+        padding: 8px 14px;
+        border-radius: 6px;
+        background: rgba(0, 0, 0, 0.6);
+        border: 1px solid rgba(255, 200, 80, 0.4);
+        font-size: 11px;
+        letter-spacing: .1em;
+        text-transform: uppercase;
+        color: #ffe6a7;
+        display: none;
+        z-index: 20;
+        pointer-events: none;
+        text-shadow: 0 1px 4px rgba(0,0,0,.7);
+      }
+      #debug-hud b { color: #7fff7f; font-weight: 700; }
+      #debug-hud .hint { opacity: .55; font-size: 10px; margin-top: 4px; }
+
+      #overlay {
+        position: fixed; inset: 0;
+        display: grid; place-items: center;
+        background:
+          radial-gradient(ellipse at 50% 20%, rgba(30, 60, 110, .55) 0%, rgba(8, 14, 22, .92) 70%),
+          rgba(8, 14, 22, .78);
+        backdrop-filter: blur(7px);
+        transition: opacity .35s ease;
+        z-index: 10;
+        overflow-y: auto;
+        padding: 24px;
+      }
+      .hidden { opacity: 0 !important; pointer-events: none !important; }
+
+      #lang-btn {
+        position: fixed;
+        top: 18px; right: 18px;
+        padding: 8px 14px;
+        background: rgba(20, 30, 45, .7);
+        border: 1px solid rgba(120, 160, 200, .3);
+        border-radius: 6px;
+        color: #eaf2ff;
+        font: 600 11px ui-monospace, monospace;
+        letter-spacing: .18em;
+        text-transform: uppercase;
+        cursor: pointer;
+        transition: all .15s ease;
+        z-index: 20;
+      }
+      #lang-btn:hover {
+        background: rgba(30, 45, 65, .85);
+        border-color: rgba(120, 200, 255, .55);
+      }
+
+      .menu-inner {
+        width: min(760px, 94vw);
+        text-align: center;
+      }
+
+      .menu-inner h1 {
+        font-size: 44px;
+        letter-spacing: .35em;
+        text-transform: uppercase;
+        margin-bottom: 6px;
+        text-shadow: 0 0 30px rgba(120, 200, 255, .35);
+      }
+      .subtitle {
+        font-size: 12px;
+        letter-spacing: .2em;
+        text-transform: uppercase;
+        color: #8fa8c0;
+        opacity: .8;
+        margin-bottom: 18px;
+      }
+
+      .username-row {
+        display: flex;
+        justify-content: center;
+        margin-bottom: 22px;
+      }
+      #username {
+        width: min(360px, 90vw);
+        padding: 12px 16px;
+        background: rgba(20, 30, 45, .7);
+        border: 2px solid rgba(120, 160, 200, .22);
+        border-radius: 8px;
+        color: #eaf2ff;
+        font: 600 14px ui-monospace, monospace;
+        letter-spacing: .12em;
+        text-align: center;
+        outline: none;
+        transition: border-color .15s ease;
+      }
+      #username:focus {
+        border-color: rgba(120, 200, 255, .65);
+        background: rgba(30, 45, 65, .75);
+      }
+      #username::placeholder { color: #556677; }
+
+      #error-msg {
+        color: #ff8a8a;
+        font-size: 11px;
+        letter-spacing: .12em;
+        text-transform: uppercase;
+        min-height: 14px;
+        margin-bottom: 12px;
+      }
+      #error-msg.ok { color: #7fff7f; }
+
+      .menu-body {
+        display: grid;
+        grid-template-columns: 220px 1fr;
+        gap: 20px;
+        margin-bottom: 22px;
+      }
+      @media (max-width: 640px) {
+        .menu-body { grid-template-columns: 1fr; }
+      }
+
+      .cards { display: flex; flex-direction: column; gap: 12px; }
+      .card {
+        padding: 18px 20px;
+        border-radius: 10px;
+        background: rgba(20, 30, 45, .7);
+        border: 2px solid rgba(120, 160, 200, .22);
+        cursor: pointer;
+        transition: all .18s ease;
+        text-align: left;
+      }
+      .card:hover {
+        border-color: rgba(120, 200, 255, .55);
+        background: rgba(30, 45, 65, .7);
+        transform: translateY(-1px);
+      }
+      .card.selected {
+        border-color: #4ade80;
+        background: rgba(34, 197, 94, .14);
+        box-shadow: 0 0 22px rgba(34, 197, 94, .3);
+      }
+      .card-title {
+        font-size: 13px;
+        letter-spacing: .16em;
+        text-transform: uppercase;
+        font-weight: 700;
+        color: #eaf2ff;
+      }
+      .card.selected .card-title { color: #b6f7c8; }
+      .card-sub {
+        font-size: 11px;
+        letter-spacing: .12em;
+        text-transform: uppercase;
+        color: #7d94ab;
+        margin-top: 4px;
+      }
+
+      .preview-wrap {
+        position: relative;
+        border-radius: 10px;
+        overflow: hidden;
+        background: radial-gradient(circle at 50% 35%, #1a2a3f 0%, #060a10 78%);
+        border: 1px solid rgba(120, 160, 200, .18);
+        aspect-ratio: 4 / 5;
+        min-height: 340px;
+      }
+      #preview-canvas { display: block; width: 100%; height: 100%; }
+      .preview-hint {
+        position: absolute;
+        bottom: 10px; left: 0; right: 0;
+        text-align: center;
+        font-size: 10px;
+        letter-spacing: .18em;
+        text-transform: uppercase;
+        color: #6f8296;
+        pointer-events: none;
+      }
+
+      #play-btn {
+        display: block;
+        width: 100%;
+        padding: 20px;
+        margin-top: 8px;
+        font: 700 20px ui-monospace, monospace;
+        letter-spacing: .4em;
+        text-transform: uppercase;
+        color: white;
+        background: linear-gradient(180deg, #22c55e 0%, #15803d 100%);
+        border: none;
+        border-radius: 12px;
+        cursor: pointer;
+        box-shadow:
+          0 0 45px rgba(34, 197, 94, .5),
+          0 8px 22px rgba(0, 0, 0, .45),
+          inset 0 2px 0 rgba(255, 255, 255, .22);
+        transition: all .15s ease;
+      }
+      #play-btn:hover:not(:disabled) {
+        box-shadow:
+          0 0 65px rgba(34, 197, 94, .75),
+          0 8px 22px rgba(0, 0, 0, .45),
+          inset 0 2px 0 rgba(255, 255, 255, .3);
+        transform: translateY(-1px);
+      }
+      #play-btn:active:not(:disabled) { transform: translateY(0); }
+      #play-btn:disabled {
+        background: #1c1c1c; color: #555; box-shadow: none;
+        cursor: wait; letter-spacing: .2em;
+      }
+
+      .keys {
+        margin-top: 16px;
+        font-size: 11px;
+        letter-spacing: .1em;
+        color: #6f8296;
+      }
+    </style>
+
+    <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/"
+      }
+    }
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+
+    <div id="crosshair"></div>
+
+    <div id="hud">
+      <span>FPS <b id="fps">--</b></span>
+      <span>Shadow <b id="shadowRes">4096²</b></span>
+    </div>
+
+    <div id="debug-hud">
+      <div>SCP state: <b id="debug-state">--</b></div>
+      <div>Players: <b id="debug-count">0</b></div>
+      <div class="hint">[F] cycle · [B] close</div>
+    </div>
+
+    <button id="lang-btn" type="button">PT</button>
+
+    <div id="overlay">
+      <div class="menu-inner">
+        <h1 id="menu-title">Maze</h1>
+        <p class="subtitle" id="menu-subtitle">Select your survivor</p>
+
+        <div class="username-row">
+          <input
+            id="username"
+            type="text"
+            maxlength="20"
+            placeholder="Enter username"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </div>
+        <div id="error-msg"></div>
+
+        <div class="menu-body">
+          <div class="cards">
+            <div class="card" data-model="1">
+              <div class="card-title">Teletubby</div>
+              <div class="card-sub">Suspiciously white</div>
+            </div>
+            <div class="card" data-model="2">
+              <div class="card-title">Roblox Noob</div>
+              <div class="card-sub">Stupid</div>
+            </div>
+          </div>
+
+          <div class="preview-wrap">
+            <canvas id="preview-canvas"></canvas>
+            <div class="preview-hint" id="preview-hint">Loading models…</div>
+          </div>
+        </div>
+
+        <button id="play-btn" disabled>Loading…</button>
+
+        <p class="keys" id="menu-keys">
+          WASD — move · Shift — run · Click — fire · Q — highlight · E — path · Ctrl — lock · P — post-fx · L — language
+        </p>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
